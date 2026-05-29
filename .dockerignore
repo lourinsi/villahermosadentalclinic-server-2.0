@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+.env.*
+*.log
+npm-debug.log*
+prisma-studio*.log
+.git
+.gitignore

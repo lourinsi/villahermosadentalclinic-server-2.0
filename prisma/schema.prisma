@@ -1,0 +1,326 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Patient {
+  id                    String    @id
+  name                  String
+  firstName             String?
+  lastName              String?
+  email                 String?
+  phone                 String?
+  alternateEmail        String?
+  alternatePhone        String?
+  password              String?
+  dateOfBirth           String?
+  address               String?
+  city                  String?
+  zipCode               String?
+  insurance             String?
+  status                String?
+  emergencyContact      String?
+  emergencyPhone        String?
+  medicalHistory        String?
+  treatmentPlan         String?
+  clinicalNotes         String?
+  allergies             String?
+  notes                 String?
+  profilePicture        String?
+  parentId              String?
+  isPrimary             Boolean?
+  relationship          String?
+  username              String?
+  dentalCharts          Json?
+  balance               Float?
+  lastVisit             String?
+  gender                String?
+  civilStatus           String?
+  age                   String?
+  ethnicity             String?
+  religion              String?
+  nationality           String?
+  currentStreet         String?
+  currentBarangay       String?
+  currentProvince       String?
+  permanentStreet       String?
+  permanentBarangay     String?
+  permanentCity         String?
+  permanentProvince     String?
+  permanentZipCode      String?
+  landline              String?
+  emergencyFirstName    String?
+  emergencyLastName     String?
+  emergencyRelationship String?
+  education             String?
+  occupation            String?
+  company               String?
+  companyAddress        String?
+  height                String?
+  weight                String?
+  createdAt             DateTime?
+  updatedAt             DateTime?
+  deleted               Boolean   @default(false)
+  deletedAt             DateTime?
+
+  @@index([email])
+  @@index([phone])
+  @@index([parentId])
+  @@index([status])
+  @@map("patients")
+}
+
+model Appointment {
+  id                 String    @id
+  patientId          String
+  patientName        String
+  date               String
+  time               String
+  type               Int
+  customType         String?
+  price              Float?
+  discount           Float?
+  doctor             String?
+  doctorId           String?
+  duration           Int?
+  notes              String?
+  serviceType        String?
+  status             String?
+  cancellationReason String?
+  paymentStatus      String?
+  paymentMethod      String?
+  balance            Float?
+  totalPaid          Float?
+  transactions       Json?
+  createdAt          DateTime?
+  updatedAt          DateTime?
+  deleted            Boolean   @default(false)
+  deletedAt          DateTime?
+
+  @@index([patientId])
+  @@index([doctor])
+  @@index([doctorId])
+  @@index([date])
+  @@index([status])
+  @@index([paymentStatus])
+  @@map("appointments")
+}
+
+model AppointmentLog {
+  id             String    @id
+  appointmentId  String
+  previousState  Json
+  newState       Json
+  changedBy      String
+  changedByName  String?
+  changedAt      DateTime?
+  changeType     String
+  amount         Float?
+  notes          String?
+
+  @@index([appointmentId])
+  @@index([changedAt])
+  @@map("appointment_logs")
+}
+
+model Payment {
+  id            String    @id
+  appointmentId String
+  patientId     String?
+  amount        Float
+  method        String
+  date          String
+  appointmentSnapshot Json?
+  transactionId String?
+  notes         String?
+  status        String?
+  createdAt     DateTime?
+  updatedAt     DateTime?
+  deleted       Boolean   @default(false)
+  deletedAt     DateTime?
+
+  @@index([appointmentId])
+  @@index([patientId])
+  @@index([status])
+  @@map("payments")
+}
+
+model PaymentLog {
+  id              String    @id
+  appointmentId   String
+  amount          Float
+  paymentMethod   String
+  paymentStatus   String
+  changedBy       String
+  changedByName   String?
+  changedAt       DateTime?
+  previousBalance Float?
+  newBalance      Float?
+
+  @@index([appointmentId])
+  @@index([changedAt])
+  @@map("payment_logs")
+}
+
+model PaymentMethod {
+  id          String    @id
+  name        String
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime?
+  updatedAt   DateTime?
+
+  @@map("payment_methods")
+}
+
+model Staff {
+  id             String    @id
+  name           String
+  role           String
+  department     String?
+  email          String?
+  phone          String?
+  hireDate       String?
+  baseSalary     Float?
+  status         String?
+  employmentType String?
+  specialization String?
+  licenseNumber  String?
+  password       String?
+  profilePicture String?
+  bio            String?
+  createdAt      DateTime?
+  updatedAt      DateTime?
+  deleted        Boolean   @default(false)
+  deletedAt      DateTime?
+
+  @@index([email])
+  @@index([role])
+  @@index([status])
+  @@map("staff")
+}
+
+model StaffFinancialRecord {
+  id                String @id
+  staffId           String
+  staffName         String
+  type              String
+  amount            Float
+  date              String
+  status            String
+  notes             String?
+  repaymentSchedule String?
+
+  @@index([staffId])
+  @@index([status])
+  @@map("staff_financial_records")
+}
+
+model StaffAttendance {
+  id            String @id
+  staffId       String
+  staffName     String
+  date          String?
+  status        String?
+  hoursWorked   Float  @default(0)
+  daysPresent   Int    @default(0)
+  daysAbsent    Int    @default(0)
+  overtimeHours Float  @default(0)
+
+  @@index([staffId])
+  @@map("staff_attendance")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      String
+  createdAt DateTime?
+  updatedAt DateTime?
+  isRead    Boolean   @default(false)
+  link      String?
+  isLog     Boolean   @default(false)
+  metadata  Json?
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+
+  @@index([userId])
+  @@index([type])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+model FinanceRecord {
+  id          String    @id
+  patientId   String?
+  type        String
+  amount      Float
+  date        String
+  appointmentSnapshot Json?
+  description String?
+  isSeeding   Boolean?
+  createdAt   DateTime?
+  updatedAt   DateTime?
+  deleted     Boolean   @default(false)
+  deletedAt   DateTime?
+
+  @@index([patientId])
+  @@index([type])
+  @@index([date])
+  @@map("finance_records")
+}
+
+model DetailedExpense {
+  id            String  @id
+  date          String
+  category      String
+  description   String
+  amount        Float
+  vendor        String?
+  paymentMethod String?
+  status        String?
+  recurring     Boolean @default(false)
+
+  @@index([category])
+  @@index([date])
+  @@map("detailed_expenses")
+}
+
+model InventoryItem {
+  id          String    @id
+  item        String
+  quantity    Float
+  unit        String?
+  costPerUnit Float?
+  totalValue  Float?
+  supplier    String?
+  lastOrdered String?
+  createdAt   DateTime?
+  updatedAt   DateTime?
+  deleted     Boolean   @default(false)
+  deletedAt   DateTime?
+
+  @@index([item])
+  @@map("inventory")
+}
+
+model Questionnaire {
+  patientId String    @id
+  data      Json
+  updatedAt DateTime?
+
+  @@map("questionnaires")
+}
+
+model StatusConfig {
+  key   String @id
+  value Json
+
+  @@map("status_configs")
+}

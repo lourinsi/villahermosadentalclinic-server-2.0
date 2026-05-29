@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: villahermosa-dental-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run prisma:generate && npm run build
+    startCommand: npx prisma migrate deploy && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true

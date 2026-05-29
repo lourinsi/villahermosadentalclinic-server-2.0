@@ -1,0 +1,60 @@
+import { Router } from "express";
+import {
+  createFinanceRecord,
+  getAllFinanceRecords,
+  getFinanceRecordById,
+  updateFinanceRecord,
+  deleteFinanceRecord,
+  getRevenue,
+  getExpenseBreakdown,
+  getDetailedExpenses,
+  createDetailedExpense,
+  getRecurringExpenses,
+  getPayroll,
+  getRecentTransactions,
+} from "../controllers/financeController";
+import { requireAuth } from "../middleware/authMiddleware";
+
+const router = Router();
+
+// Apply requireAuth to all finance routes
+router.use(requireAuth);
+
+// POST - Add new finance record
+router.post("/", createFinanceRecord);
+
+// GET - Get all finance records
+router.get("/", getAllFinanceRecords);
+
+// GET - Get revenue data - MORE SPECIFIC ROUTE FIRST
+router.get("/revenue", getRevenue);
+
+// GET - Get expense breakdown - MORE SPECIFIC ROUTE FIRST
+router.get("/expense-breakdown", getExpenseBreakdown);
+
+// GET - Get detailed expenses - MORE SPECIFIC ROUTE FIRST
+router.get("/detailed-expenses", getDetailedExpenses);
+
+// POST - Add new detailed expense
+router.post("/detailed-expenses", createDetailedExpense);
+
+// GET - Get recurring expenses - MORE SPECIFIC ROUTE FIRST
+router.get("/recurring-expenses", getRecurringExpenses);
+
+// GET - Get payroll data - MORE SPECIFIC ROUTE FIRST
+router.get("/payroll", getPayroll);
+
+// GET - Get recent transactions - MORE SPECIFIC ROUTE FIRST
+router.get("/recent-transactions", getRecentTransactions);
+
+// GET - Get finance record by ID - GENERAL ROUTE LAST
+router.get("/:id", getFinanceRecordById);
+
+// PUT - Update finance record
+router.put("/:id", updateFinanceRecord);
+
+// DELETE - Soft delete finance record
+router.delete("/:id", deleteFinanceRecord);
+
+
+export default router;

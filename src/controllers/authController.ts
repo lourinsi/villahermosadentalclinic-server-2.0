@@ -1,0 +1,370 @@
+import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { prisma } from "../lib/prisma";
+
+const ADMIN_USERNAME = "admin";
+const ADMIN_PASSWORD = "password";
+let ADMIN_PASSWORD_HASH: string;
+
+const TEST_DOCTOR_USERNAME = "doctor";
+const TEST_DOCTOR_PASSWORD = "password";
+const TEST_DOCTOR_STAFF_ID = "seed_staff_test_doctor";
+let TEST_DOCTOR_PASSWORD_HASH: string;
+
+const DEFAULT_DOCTOR_PASSWORD = "doctor123";
+let DOCTOR_PASSWORD_HASH: string;
+
+const DEFAULT_RECEPTIONIST_PASSWORD = "password";
+let RECEPTIONIST_PASSWORD_HASH: string;
+
+const DEFAULT_PATIENT_PASSWORD = "villahermosa123";
+let PATIENT_PASSWORD_HASH: string;
+
+const JWT_SECRET = process.env.JWT_SECRET || "your-super-secret-jwt-key-change-this-in-production";
+const JWT_EXPIRY = "24h";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const AUTH_COOKIE_SAME_SITE = IS_PRODUCTION ? "none" : "strict";
+
+export const initializeAuth = async () => {
+  try {
+    ADMIN_PASSWORD_HASH = await bcrypt.hash(ADMIN_PASSWORD, 10);
+    TEST_DOCTOR_PASSWORD_HASH = await bcrypt.hash(TEST_DOCTOR_PASSWORD, 10);
+    DOCTOR_PASSWORD_HASH = await bcrypt.hash(DEFAULT_DOCTOR_PASSWORD, 10);
+    RECEPTIONIST_PASSWORD_HASH = await bcrypt.hash(DEFAULT_RECEPTIONIST_PASSWORD, 10);
+    PATIENT_PASSWORD_HASH = await bcrypt.hash(DEFAULT_PATIENT_PASSWORD, 10);
+    console.log("[AUTH] Password hashes initialized");
+  } catch (error) {
+    console.error("[AUTH] Failed to initialize password hash:", error);
+    throw error;
+  }
+};
+
+export const register = async (
+  req: express.Request,
+  res: express.Response
+): Promise<void> => {
+  try {
+    const { name, email, phone, password } = req.body;
+
+    if (!(email || phone)) {
+      res.status(400).json({
+        success: false,
+        message: "Email or phone is required",
+      });
+      return;
+    }
+
+    const existingPatient = await prisma.patient.findFirst({
+      where: {
+        deleted: false,
+        OR: [
+          ...(email ? [{ email }] : []),
+          ...(phone ? [{ phone }] : []),
+        ],
+      },
+    });
+
+    if (existingPatient) {
+      res.status(409).json({
+        success: false,
+        message: "A patient with this email or phone number already exists",
+      });
+      return;
+    }
+
+    const passwordHash = password ? await bcrypt.hash(password, 10) : PATIENT_PASSWORD_HASH;
+    const newPatientId = `PATIENT-${Date.now()}`;
+    const newPatient = await prisma.patient.create({
+      data: {
+        id: newPatientId,
+        name: name || email || phone,
+        email: email || "",
+        phone: phone || "",
+        password: passwordHash,
+        parentId: null,
+        isPrimary: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deleted: false,
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Patient registered successfully",
+      patient: {
+        id: newPatient.id,
+        name: newPatient.name,
+        email: newPatient.email,
+        phone: newPatient.phone,
+      },
+    });
+  } catch (error) {
+    console.error("[AUTH] Registration error:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred during registration",
+    });
+  }
+};
+
+const setAuthCookie = (res: express.Response, token: string) => {
+  res.cookie("authToken", token, {
+    httpOnly: true,
+    secure: IS_PRODUCTION,
+    sameSite: AUTH_COOKIE_SAME_SITE,
+    maxAge: 24 * 60 * 60 * 1000,
+    path: "/",
+  });
+};
+
+const signToken = (payload: Record<string, unknown>) =>
+  jwt.sign(
+    {
+      ...payload,
+      iat: Math.floor(Date.now() / 1000),
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRY }
+  );
+
+const getStaffPortalRole = (staffRole?: string | null) => {
+  const role = String(staffRole || "").toLowerCase();
+  if (role === "doctor" || role.includes("dentist")) return "doctor";
+  if (role.includes("reception")) return "receptionist";
+  return "";
+};
+
+export const login = async (
+  req: express.Request,
+  res: express.Response
+): Promise<void> => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      res.status(400).json({
+        success: false,
+        message: "Username and password are required",
+      });
+      return;
+    }
+
+    if (username === ADMIN_USERNAME) {
+      const isPasswordValid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+      if (!isPasswordValid) {
+        res.status(401).json({ success: false, message: "Invalid credentials" });
+        return;
+      }
+
+      const token = signToken({
+        username: ADMIN_USERNAME,
+        name: "Admin",
+        role: "admin",
+      });
+
+      setAuthCookie(res, token);
+      res.status(200).json({
+        success: true,
+        message: "Login successful",
+        token,
+        user: { username: ADMIN_USERNAME, role: "admin" },
+      });
+      return;
+    }
+
+    if (username.toLowerCase() === TEST_DOCTOR_USERNAME) {
+      const isPasswordValid = await bcrypt.compare(password, TEST_DOCTOR_PASSWORD_HASH);
+      if (!isPasswordValid) {
+        res.status(401).json({ success: false, message: "Invalid credentials" });
+        return;
+      }
+
+      const doctor = await prisma.staff.findFirst({
+        where: { id: TEST_DOCTOR_STAFF_ID, deleted: false },
+      });
+
+      if (!doctor) {
+        res.status(404).json({
+          success: false,
+          message: "Test doctor staff record not found",
+        });
+        return;
+      }
+
+      const token = signToken({
+        username: doctor.name,
+        name: doctor.name,
+        role: "doctor",
+        staffId: doctor.id,
+      });
+
+      setAuthCookie(res, token);
+      res.status(200).json({
+        success: true,
+        message: "Login successful",
+        token,
+        user: { username: doctor.name, role: "doctor", staffId: doctor.id },
+      });
+      return;
+    }
+
+    const staffMembers = await prisma.staff.findMany({ where: { deleted: false } });
+    const usernameLower = String(username).toLowerCase();
+    const matchingStaff = staffMembers.find((staff) => {
+      const nameMatch = staff.name.toLowerCase() === usernameLower;
+      const emailMatch = staff.email?.toLowerCase() === usernameLower;
+      const portalRole = getStaffPortalRole(staff.role);
+      return (nameMatch || emailMatch) && Boolean(portalRole);
+    });
+
+    if (matchingStaff) {
+      const portalRole = getStaffPortalRole(matchingStaff.role);
+      const fallbackPasswordHash =
+        portalRole === "receptionist" ? RECEPTIONIST_PASSWORD_HASH : DOCTOR_PASSWORD_HASH;
+      const isPasswordValid = matchingStaff.password
+        ? await bcrypt.compare(password, matchingStaff.password)
+        : await bcrypt.compare(password, fallbackPasswordHash);
+
+      if (!isPasswordValid) {
+        res.status(401).json({ success: false, message: "Invalid credentials" });
+        return;
+      }
+
+      const token = signToken({
+        username: matchingStaff.name,
+        name: matchingStaff.name,
+        role: portalRole,
+        staffId: matchingStaff.id,
+      });
+
+      setAuthCookie(res, token);
+      res.status(200).json({
+        success: true,
+        message: "Login successful",
+        token,
+        user: { username: matchingStaff.name, role: portalRole, staffId: matchingStaff.id },
+      });
+      return;
+    }
+
+    const patients = await prisma.patient.findMany({ where: { deleted: false } });
+    const patient = patients.find(
+      (candidate) =>
+        candidate.email?.toLowerCase() === usernameLower || candidate.phone === username
+    );
+
+    if (patient) {
+      let isPasswordValid = false;
+
+      if (!patient.password) {
+        isPasswordValid = await bcrypt.compare(password, PATIENT_PASSWORD_HASH);
+        if (isPasswordValid) {
+          await prisma.patient.update({
+            where: { id: patient.id },
+            data: { password: PATIENT_PASSWORD_HASH, updatedAt: new Date() },
+          });
+        }
+      } else {
+        isPasswordValid = await bcrypt.compare(password, patient.password);
+      }
+
+      if (!isPasswordValid) {
+        res.status(401).json({ success: false, message: "Invalid credentials" });
+        return;
+      }
+
+      const token = signToken({
+        id: patient.id,
+        username: patient.email,
+        name: patient.name,
+        email: patient.email,
+        role: "patient",
+        patientId: patient.id,
+      });
+
+      setAuthCookie(res, token);
+      res.status(200).json({
+        success: true,
+        message: "Login successful",
+        token,
+        user: {
+          username: patient.name,
+          role: "patient",
+          patientId: patient.id,
+        },
+      });
+      return;
+    }
+
+    res.status(401).json({ success: false, message: "Invalid credentials" });
+  } catch (error) {
+    console.error("[AUTH] Login error:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred during login",
+    });
+  }
+};
+
+export const logout = (
+  req: express.Request,
+  res: express.Response
+): void => {
+  try {
+    res.clearCookie("authToken", {
+      httpOnly: true,
+      secure: IS_PRODUCTION,
+      sameSite: AUTH_COOKIE_SAME_SITE,
+      path: "/",
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Logout successful",
+    });
+  } catch (error) {
+    console.error("[AUTH] Logout error:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred during logout",
+    });
+  }
+};
+
+export const verifyToken = (
+  req: express.Request,
+  res: express.Response
+): void => {
+  try {
+    const token = req.cookies.authToken || req.headers.authorization?.split(" ")[1];
+
+    if (!token) {
+      res.status(401).json({
+        success: false,
+        message: "No token provided",
+      });
+      return;
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    res.status(200).json({
+      success: true,
+      message: "Token is valid",
+      user: decoded,
+    });
+  } catch (error) {
+    console.error("[AUTH] Token verification error:", error);
+    res.status(401).json({
+      success: false,
+      message: "Invalid or expired token",
+    });
+  }
+};
+
+export const hashPassword = async (password: string): Promise<string> => {
+  const salt = await bcrypt.genSalt(10);
+  return bcrypt.hash(password, salt);
+};

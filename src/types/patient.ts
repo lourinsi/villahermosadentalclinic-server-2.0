@@ -1,0 +1,68 @@
+export interface Patient {
+  id?: string;
+  name: string;
+  email: string;
+  phone: string;
+  alternateEmail?: string;
+  alternatePhone?: string;
+  password?: string;
+  firstName?: string;
+  lastName?: string;
+  dateOfBirth?: string;
+  address?: string;
+  city?: string;
+  zipCode?: string;
+  insurance?: string;
+  emergencyContact?: string;
+  emergencyPhone?: string;
+  medicalHistory?: string;
+  treatmentPlan?: string;
+  clinicalNotes?: string;
+  allergies?: string;
+  notes?: string;
+  profilePicture?: string;
+  parentId?: string;
+  isPrimary?: boolean;
+  relationship?: string;
+  username?: string; // Optional: for linking to auth user accounts
+  dentalCharts?: { date: string; data: string; isEmpty: boolean }[];
+  balance?: number | null;
+  status?: "active" | "overdue" | "inactive" | string;
+  lastVisit?: string;
+  gender?: string | null;
+  civilStatus?: string | null;
+  age?: string | null;
+  ethnicity?: string | null;
+  religion?: string | null;
+  nationality?: string | null;
+  currentStreet?: string | null;
+  currentBarangay?: string | null;
+  currentProvince?: string | null;
+  permanentStreet?: string | null;
+  permanentBarangay?: string | null;
+  permanentCity?: string | null;
+  permanentProvince?: string | null;
+  permanentZipCode?: string | null;
+  landline?: string | null;
+  emergencyFirstName?: string | null;
+  emergencyLastName?: string | null;
+  emergencyRelationship?: string | null;
+  education?: string | null;
+  occupation?: string | null;
+  company?: string | null;
+  companyAddress?: string | null;
+  height?: string | null;
+  weight?: string | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+  deleted?: boolean;
+  deletedAt?: Date;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  meta?: any;
+  data?: T;
+  error?: string;
+}
