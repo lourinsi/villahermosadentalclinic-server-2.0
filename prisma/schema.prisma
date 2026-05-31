@@ -241,16 +241,19 @@ model Notification {
   title     String
   message   String
   type      String
+  appointmentId String?
   createdAt DateTime?
   updatedAt DateTime?
   isRead    Boolean   @default(false)
   link      String?
   isLog     Boolean   @default(false)
   metadata  Json?
+  notificationImage String?
   deleted   Boolean   @default(false)
   deletedAt DateTime?
 
   @@index([userId])
+  @@index([appointmentId])
   @@index([type])
   @@index([isRead])
   @@map("notifications")

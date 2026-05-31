@@ -71,6 +71,43 @@ export const createNotification = async (
   type: NotificationType,
   metadata?: Notification["metadata"]
 ): Promise<Notification> => {
+  // Try to populate a stable `notificationImage` in metadata so clients can
+  // render avatars without querying staff/patient lists. Prefer an explicit
+  // `notificationImage` if provided; otherwise try doctor/patient profiles.
+  const resolveNotificationImage = async (meta?: Notification["metadata"]) => {
+    if (!meta) return undefined;
+    // explicit override
+    if (meta.notificationImage) return meta.notificationImage;
+    if (meta.doctorProfile) return meta.doctorProfile;
+    if (meta.patientProfile) return meta.patientProfile;
+
+    try {
+      if (meta.doctorId) {
+        const staff = await prisma.staff.findUnique({ where: { id: String(meta.doctorId) } });
+        if (staff?.profilePicture) return staff.profilePicture;
+      }
+
+      if (meta.doctor) {
+        const staff = await prisma.staff.findFirst({ where: { deleted: false, name: String(meta.doctor) } });
+        if (staff?.profilePicture) return staff.profilePicture;
+      }
+
+      if (meta.patientId) {
+        const patient = await prisma.patient.findUnique({ where: { id: String(meta.patientId) } });
+        if (patient?.profilePicture) return patient.profilePicture;
+      }
+    } catch (err) {
+      // ignore DB lookup failures and fall back to no image
+      console.warn('[notifications] Failed to resolve notification image:', err);
+    }
+
+    return undefined;
+  };
+
+  const resolvedImage = await resolveNotificationImage(metadata);
+  if (resolvedImage && (!metadata || !metadata.notificationImage)) {
+    metadata = { ...(metadata || {}), notificationImage: resolvedImage } as any;
+  }
   const created = await prisma.notification.create({
     data: {
       userId,
@@ -78,6 +115,8 @@ export const createNotification = async (
       message,
       type,
       metadata: sanitizeJson(metadata) as any,
+      notificationImage: metadata?.notificationImage || undefined,
+      appointmentId: metadata?.appointmentId || undefined,
       createdAt: new Date(),
       updatedAt: new Date(),
       isRead: false,
@@ -104,10 +143,15 @@ export const updateOrCreateNotificationForAppointment = async (
       userId,
       type: details.type,
       isLog: false,
-      metadata: {
-        path: ["appointmentId"],
-        equals: appointmentId,
-      },
+      OR: [
+        {
+          metadata: {
+            path: ["appointmentId"],
+            equals: appointmentId,
+          },
+        },
+        { appointmentId: appointmentId },
+      ],
     },
   });
 
@@ -119,6 +163,8 @@ export const updateOrCreateNotificationForAppointment = async (
         message: details.message,
         type: details.type,
         metadata: sanitizeJson(details.metadata) as any,
+        notificationImage: details.metadata?.notificationImage || undefined,
+        appointmentId: details.metadata?.appointmentId || undefined,
         isRead: false,
         updatedAt: new Date(),
         deleted: false,
@@ -708,7 +754,10 @@ export const updateNotificationMetadata = async (
     where: {
       userId,
       isLog: false,
-      metadata: { path: ["appointmentId"], equals: appointmentId },
+      OR: [
+        { metadata: { path: ["appointmentId"], equals: appointmentId } },
+        { appointmentId: appointmentId },
+      ],
     },
   });
 
@@ -738,7 +787,10 @@ export const archiveNotificationAsLog = async (
       userId,
       isLog: false,
       ...(type ? { type } : {}),
-      metadata: { path: ["appointmentId"], equals: appointmentId },
+      OR: [
+        { metadata: { path: ["appointmentId"], equals: appointmentId } },
+        { appointmentId: appointmentId },
+      ],
     },
   });
 

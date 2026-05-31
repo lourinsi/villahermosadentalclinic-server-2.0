@@ -11,7 +11,14 @@ export interface Notification {
   link?: string;
   isLog?: boolean; // Marked as true when this is a historical log entry (read-only)
   metadata?: {
+    // Allow additional fields (notificationImage, doctorProfile, doctorId, patientId, etc.)
+    [key: string]: any;
     appointmentId?: string;
+    notificationImage?: string;
+    doctorProfile?: string;
+    patientProfile?: string;
+    doctorId?: string;
+    patientId?: string;
     currentStatus?: string;
     patientName?: string;
     appointmentDate?: string;

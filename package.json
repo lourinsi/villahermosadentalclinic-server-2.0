@@ -13,7 +13,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio --browser none",
     "db:push": "prisma db push",
-    "db:import-json": "tsx src/scripts/importJsonData.ts"
+    "db:import-json": "tsx src/scripts/importJsonData.ts",
+    "backfill:notifications": "ts-node src/scripts/backfill_notifications_appointmentId.ts"
   },
   "keywords": [],
   "author": "",
