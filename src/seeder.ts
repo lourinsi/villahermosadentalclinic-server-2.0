@@ -52,6 +52,37 @@ const createRecords = async (model: SeedModel, records: any[]) => {
 };
 
 const resetSeedData = async () => {
+  const seedRecurringSeries = await prisma.recurringSeries.findMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { rootAppointmentId: { startsWith: SEED_PREFIX } },
+      ],
+    },
+    select: { id: true },
+  });
+  const seedRecurringSeriesIds = seedRecurringSeries.map((series) => series.id);
+
+  await prisma.recurringOccurrence.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { appointmentId: { startsWith: SEED_PREFIX } },
+        { parentAppointmentId: { startsWith: SEED_PREFIX } },
+        { seriesId: { startsWith: SEED_PREFIX } },
+        { seriesId: { in: seedRecurringSeriesIds } },
+      ],
+    },
+  });
+  await prisma.recurringSeries.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { rootAppointmentId: { startsWith: SEED_PREFIX } },
+        { id: { in: seedRecurringSeriesIds } },
+      ],
+    },
+  });
   await prisma.paymentLog.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.appointmentLog.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.payment.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
@@ -139,16 +170,24 @@ const makeAppointment = ({
     price,
     discount,
     doctor,
+    doctorId: null as string | null,
     duration,
     notes,
     serviceType,
     status,
+    cancellationReason: status === "cancelled" ? notes || "Seed cancelled appointment." : null,
     paymentStatus,
     paymentMethod: paymentMethod || null,
     balance,
     totalPaid,
+    transactions: null,
+    recurrence: null,
+    isRecurring: false,
+    recurringSeriesId: null,
     createdAt: clampedCreatedAt,
     updatedAt: now,
+    deleted: false,
+    deletedAt: null,
   };
 };
 
@@ -158,12 +197,24 @@ const appointmentSnapshot = (appointment: any): JsonRecord => ({
   patientName: appointment.patientName,
   date: appointment.date,
   time: appointment.time,
+  type: appointment.type,
+  customType: appointment.customType || "",
   doctor: appointment.doctor,
+  doctorId: appointment.doctorId || null,
+  duration: appointment.duration,
+  notes: appointment.notes || "",
   serviceType: appointment.serviceType,
   status: appointment.status,
+  cancellationReason: appointment.cancellationReason || null,
   paymentStatus: appointment.paymentStatus,
+  paymentMethod: appointment.paymentMethod || null,
   price: appointment.price,
+  discount: appointment.discount || 0,
   balance: appointment.balance,
+  totalPaid: appointment.totalPaid || 0,
+  recurrence: appointment.recurrence || null,
+  isRecurring: Boolean(appointment.isRecurring),
+  recurringSeriesId: appointment.recurringSeriesId || null,
 });
 
 async function main() {
@@ -937,6 +988,29 @@ async function main() {
   // Ensure any pre-existing payments/logs for these appointment IDs are removed
   // This prevents leftover transactions from previous seed runs producing duplicates.
   const seededAppointmentIds = appointments.map((a) => a.id);
+  const seededRecurringSeries = await prisma.recurringSeries.findMany({
+    where: { rootAppointmentId: { in: seededAppointmentIds } },
+    select: { id: true },
+  });
+  const seededRecurringSeriesIds = seededRecurringSeries.map((series) => series.id);
+
+  await prisma.recurringOccurrence.deleteMany({
+    where: {
+      OR: [
+        { appointmentId: { in: seededAppointmentIds } },
+        { parentAppointmentId: { in: seededAppointmentIds } },
+        { seriesId: { in: seededRecurringSeriesIds } },
+      ],
+    },
+  });
+  await prisma.recurringSeries.deleteMany({
+    where: {
+      OR: [
+        { rootAppointmentId: { in: seededAppointmentIds } },
+        { id: { in: seededRecurringSeriesIds } },
+      ],
+    },
+  });
   await prisma.payment.deleteMany({ where: { appointmentId: { in: seededAppointmentIds } } });
   await prisma.paymentLog.deleteMany({ where: { appointmentId: { in: seededAppointmentIds } } });
   await prisma.appointmentLog.deleteMany({ where: { appointmentId: { in: seededAppointmentIds } } });
@@ -973,21 +1047,7 @@ async function main() {
   const appointmentLogs = appointments.map((appointment, index) => {
     const payment = paymentByAppointmentId.get(appointment.id);
     const seedPaymentAmount = payment ? Number(payment.amount || 0) : 0;
-    const createdSnapshot: JsonRecord = {
-      id: appointment.id,
-      patientId: appointment.patientId,
-      patientName: appointment.patientName,
-      date: appointment.date,
-      time: appointment.time,
-      doctor: appointment.doctor,
-      serviceType: appointment.serviceType,
-      status: appointment.status,
-      paymentStatus: appointment.paymentStatus,
-      paymentMethod: appointment.paymentMethod,
-      price: appointment.price,
-      balance: appointment.balance,
-      totalPaid: appointment.totalPaid,
-    };
+    const createdSnapshot = appointmentSnapshot(appointment);
 
     return {
       id: `${SEED_PREFIX}appt_log_${index + 1}_created`,

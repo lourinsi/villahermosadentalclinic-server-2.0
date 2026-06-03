@@ -126,6 +126,132 @@ const getComputedPatientStatus = (hasOverdue: boolean, effectiveLastVisit?: stri
   return "active";
 };
 
+const appointmentDateOnly = (value?: string | null) => String(value || "").split(" ")[0];
+
+const compareAppointmentSchedule = (a: any, b: any) => {
+  const aDate = appointmentDateOnly(a.date);
+  const bDate = appointmentDateOnly(b.date);
+  if (aDate !== bDate) return aDate.localeCompare(bDate);
+  return String(a.time || "").localeCompare(String(b.time || ""));
+};
+
+const withPatientAppointmentSummaries = async (patients: any[], doctor?: string) => {
+  const patientIds = patients.map((patient) => patient.id).filter(Boolean) as string[];
+  if (patientIds.length === 0) return patients;
+
+  const appointmentWhere: any = {
+    deleted: false,
+    patientId: { in: patientIds },
+  };
+  if (doctor) appointmentWhere.doctor = doctor;
+
+  const appts = await prisma.appointment.findMany({
+    where: appointmentWhere,
+    select: {
+      id: true,
+      patientId: true,
+      price: true,
+      discount: true,
+      status: true,
+      date: true,
+      time: true,
+      paymentStatus: true,
+      balance: true,
+      totalPaid: true,
+    },
+  });
+
+  const apptIds = appts.map((appointment) => appointment.id).filter(Boolean) as string[];
+  const payments = apptIds.length
+    ? await prisma.payment.findMany({
+        where: { deleted: false, appointmentId: { in: apptIds } },
+        select: { appointmentId: true, amount: true },
+      })
+    : [];
+
+  const paymentSums: Record<string, number> = {};
+  for (const payment of payments) {
+    const appointmentId = payment.appointmentId as string;
+    paymentSums[appointmentId] = (paymentSums[appointmentId] || 0) + Number(payment.amount || 0);
+  }
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const apptMap: Record<
+    string,
+    {
+      totalBalance: number;
+      hasOverdue: boolean;
+      overdueAppointmentCount: number;
+      lastCompletedDate?: string | null;
+      nextAppointment?: any;
+    }
+  > = {};
+
+  for (const appointment of appts) {
+    const patientId = appointment.patientId as string;
+    if (!apptMap[patientId]) {
+      apptMap[patientId] = {
+        totalBalance: 0,
+        hasOverdue: false,
+        overdueAppointmentCount: 0,
+        lastCompletedDate: null,
+        nextAppointment: null,
+      };
+    }
+
+    const entry = apptMap[patientId];
+    const aptStatus = normalizeStatus(appointment.status);
+    const appointmentDate = appointmentDateOnly(appointment.date);
+    const billable = isBillableAppointment(appointment);
+
+    entry.totalBalance += getAppointmentOutstandingBalance(appointment, paymentSums);
+
+    if (billable && String(appointment.paymentStatus || "").toLowerCase() === "overdue") {
+      entry.hasOverdue = true;
+      entry.overdueAppointmentCount += 1;
+    }
+
+    if (aptStatus === "completed" && appointmentDate) {
+      if (!entry.lastCompletedDate || appointmentDate > entry.lastCompletedDate) {
+        entry.lastCompletedDate = appointmentDate;
+      }
+    }
+
+    if (
+      appointmentDate >= todayStr &&
+      aptStatus !== "completed" &&
+      aptStatus !== "cancelled" &&
+      !isPatientCartStatus(aptStatus)
+    ) {
+      if (!entry.nextAppointment || compareAppointmentSchedule(appointment, entry.nextAppointment) < 0) {
+        entry.nextAppointment = appointment;
+      }
+    }
+  }
+
+  return patients.map((patient) => {
+    const agg = apptMap[patient.id] || {
+      totalBalance: 0,
+      hasOverdue: false,
+      overdueAppointmentCount: 0,
+      lastCompletedDate: null,
+      nextAppointment: null,
+    };
+    const effectiveLastVisit = latestDate(patient.lastVisit, agg.lastCompletedDate);
+    const computedBalance = agg.totalBalance > 0 ? agg.totalBalance : toPositiveBalance(patient.balance);
+    const newStatus = getComputedPatientStatus(agg.hasOverdue, effectiveLastVisit);
+
+    return {
+      ...patient,
+      balance: computedBalance,
+      status: newStatus,
+      lastVisit: effectiveLastVisit,
+      nextAppointment: agg.nextAppointment?.date ? appointmentDateOnly(agg.nextAppointment.date) : null,
+      overdueAppointmentCount: agg.overdueAppointmentCount,
+    } as any;
+  });
+};
+
 const buildPatientUpdateData = (input: Record<string, any>) => {
   const data: Record<string, any> = {};
 
@@ -395,7 +521,7 @@ export const getPatients = async (
       orderBy: { createdAt: "desc" },
     })) as any[];
 
-    if (doctor && !search) {
+    if (doctor) {
       const appointments = await prisma.appointment.findMany({
         where: { deleted: false, doctor },
         select: { patientId: true },
@@ -420,73 +546,8 @@ export const getPatients = async (
       });
     }
 
-    // Compute balance and overdue status for the remaining patients server-side using Prisma data.
-    // Patient.balance is kept as a ledger fallback because older hosted records may have balances
-    // that are not represented by appointment rows anymore.
-    if (active.length > 0) {
-      const patientIds = active.map((p) => p.id).filter(Boolean) as string[];
-
-      const appts = await prisma.appointment.findMany({
-        where: { deleted: false, patientId: { in: patientIds } },
-        select: { id: true, patientId: true, price: true, discount: true, status: true, date: true, paymentStatus: true, balance: true, totalPaid: true },
-      });
-
-      const apptMap: Record<string, { totalBalance: number; hasOverdue: boolean; lastCompletedDate?: string | null }> = {};
-
-      const apptIds = appts.map((a) => a.id).filter(Boolean) as string[];
-      // Fetch payments for these appointments so we compute outstanding amounts reliably
-      const payments = apptIds.length
-        ? await prisma.payment.findMany({
-            where: { deleted: false, appointmentId: { in: apptIds } },
-            select: { appointmentId: true, amount: true },
-          })
-        : [];
-
-      const paymentSums: Record<string, number> = {};
-      for (const p of payments) {
-        const aid = p.appointmentId as string;
-        paymentSums[aid] = (paymentSums[aid] || 0) + Number(p.amount || 0);
-      }
-
-      for (const a of appts) {
-        const pid = a.patientId as string;
-        if (!apptMap[pid]) apptMap[pid] = { totalBalance: 0, hasOverdue: false, lastCompletedDate: null };
-        const entry = apptMap[pid];
-
-        entry.totalBalance += getAppointmentOutstandingBalance(a, paymentSums);
-
-        const aptStatus = normalizeStatus(a.status);
-        const aptPaymentStatus = String((a as any).paymentStatus || "").toLowerCase();
-
-        // Mark overdue only when the appointment's paymentStatus is 'overdue'.
-        if (isBillableAppointment(a) && aptPaymentStatus === "overdue") {
-          entry.hasOverdue = true;
-        }
-
-        if (aptStatus === "completed" && a.date) {
-          if (!entry.lastCompletedDate || a.date > entry.lastCompletedDate) {
-            entry.lastCompletedDate = a.date;
-          }
-        }
-      }
-
-      // Merge computed values back into patient records
-      active = active.map((patient) => {
-        const agg = apptMap[patient.id] || { totalBalance: 0, hasOverdue: false, lastCompletedDate: null };
-        const effectiveLastVisit = latestDate(patient.lastVisit, agg.lastCompletedDate);
-        const computedBalance = agg.totalBalance > 0 ? agg.totalBalance : toPositiveBalance(patient.balance);
-        const newStatus = getComputedPatientStatus(agg.hasOverdue, effectiveLastVisit);
-
-        return {
-          ...patient,
-          balance: computedBalance,
-          status: newStatus,
-          lastVisit: effectiveLastVisit,
-        } as any;
-      });
-    }
-
     if (status && status !== "all") {
+      active = await withPatientAppointmentSummaries(active, doctor);
       active = active.filter((patient) => patient.status === status);
     }
 
@@ -512,7 +573,11 @@ export const getPatients = async (
     const total = active.length;
     const totalPages = Math.max(1, Math.ceil(total / limitNum));
     const start = (pageNum - 1) * limitNum;
-    const items = active.slice(start, start + limitNum).map((patient) => stripPassword(patient));
+    const pageItems = active.slice(start, start + limitNum);
+    const summarizedItems = status && status !== "all"
+      ? pageItems
+      : await withPatientAppointmentSummaries(pageItems, doctor);
+    const items = summarizedItems.map((patient) => stripPassword(patient));
 
     res.json({
       success: true,
@@ -530,6 +595,112 @@ export const getPatients = async (
   }
 };
 
+export const getPatientOptions = async (
+  req: Request,
+  res: Response<ApiResponse<Patient[]>>
+) => {
+  try {
+    const {
+      search = "",
+      limit = "1000",
+      doctor = "",
+      selectedId = "",
+    } = req.query as Record<string, string>;
+    const limitNum = Math.max(1, Math.min(1000, parseInt(limit, 10) || 1000));
+    const q = search.trim().toLowerCase();
+
+    const where: any = { deleted: false };
+
+    if (q) {
+      where.OR = [
+        { firstName: { contains: q, mode: "insensitive" } },
+        { lastName: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } },
+        { email: { contains: q, mode: "insensitive" } },
+        { phone: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    if (doctor) {
+      const appointments = await prisma.appointment.findMany({
+        where: { deleted: false, doctor },
+        select: { patientId: true },
+      });
+      const doctorPatientIds = Array.from(new Set(appointments.map((appointment) => appointment.patientId).filter(Boolean)));
+      where.id = { in: doctorPatientIds };
+    }
+
+    const requester = (req as any).user || (req as any).authUser;
+    if (requester?.role === "patient") {
+      const userEmail = String(requester.email || "").toLowerCase();
+      const userName = String(requester.username || "").toLowerCase();
+      const userId = requester.id || requester.patientId ? String(requester.id || requester.patientId) : undefined;
+      const patientClauses = [
+        ...(userEmail ? [{ email: { equals: userEmail, mode: "insensitive" } }] : []),
+        ...(userName ? [{ username: { equals: userName, mode: "insensitive" } }, { name: { equals: userName, mode: "insensitive" } }] : []),
+        ...(userId ? [{ id: userId }, { parentId: userId }] : []),
+      ];
+
+      if (patientClauses.length > 0) {
+        where.AND = [...(where.AND || []), { OR: patientClauses }];
+      }
+    }
+
+    let patients = await prisma.patient.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limitNum,
+      select: {
+        id: true,
+        name: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        profilePicture: true,
+        dateOfBirth: true,
+        parentId: true,
+        isPrimary: true,
+        relationship: true,
+      },
+    });
+
+    if (selectedId && !patients.some((patient) => patient.id === selectedId)) {
+      const selectedPatient = await prisma.patient.findFirst({
+        where: { id: selectedId, deleted: false },
+        select: {
+          id: true,
+          name: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          profilePicture: true,
+          dateOfBirth: true,
+          parentId: true,
+          isPrimary: true,
+          relationship: true,
+        },
+      });
+      if (selectedPatient) patients = [selectedPatient, ...patients];
+    }
+
+    res.json({
+      success: true,
+      message: "Patient options retrieved successfully",
+      data: patients as unknown as Patient[],
+      meta: { total: patients.length, limit: limitNum },
+    });
+  } catch (error) {
+    console.error("Error fetching patient options:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching patient options",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
 export const getPatientById = async (
   req: Request,
   res: Response<ApiResponse<Patient | null>>
@@ -541,50 +712,7 @@ export const getPatientById = async (
       return res.status(404).json({ success: false, message: "Patient not found" });
     }
 
-    // Compute appointments-based balance and overdue flag for this patient.
-    // Preserve Patient.balance as a ledger fallback for older hosted records.
-    const appts = await prisma.appointment.findMany({
-      where: { deleted: false, patientId: patient.id },
-      select: { id: true, price: true, discount: true, status: true, date: true, paymentStatus: true, balance: true, totalPaid: true },
-    });
-
-    let totalBalance = 0;
-    let hasOverdue = false;
-    let lastCompletedDate: string | null = null;
-
-    const apptIds = appts.map((a) => a.id).filter(Boolean) as string[];
-    const payments = apptIds.length
-      ? await prisma.payment.findMany({ where: { deleted: false, appointmentId: { in: apptIds } }, select: { appointmentId: true, amount: true } })
-      : [];
-
-    const paymentSums: Record<string, number> = {};
-    for (const p of payments) {
-      const aid = p.appointmentId as string;
-      paymentSums[aid] = (paymentSums[aid] || 0) + Number(p.amount || 0);
-    }
-
-    for (const a of appts) {
-      totalBalance += getAppointmentOutstandingBalance(a, paymentSums);
-
-      const aptStatus = normalizeStatus(a.status);
-      const aptPaymentStatus = String((a as any).paymentStatus || "").toLowerCase();
-      // Mark overdue only when appointment paymentStatus is 'overdue'
-      if (isBillableAppointment(a) && aptPaymentStatus === "overdue") hasOverdue = true;
-      if (aptStatus === "completed" && a.date) {
-        if (!lastCompletedDate || a.date > lastCompletedDate) lastCompletedDate = a.date;
-      }
-    }
-
-    const effectiveLastVisit = latestDate(patient.lastVisit, lastCompletedDate);
-    const computedBalance = totalBalance > 0 ? totalBalance : toPositiveBalance(patient.balance);
-    const newStatus = getComputedPatientStatus(hasOverdue, effectiveLastVisit);
-
-    const patientForResponse = {
-      ...patient,
-      balance: computedBalance,
-      status: newStatus,
-      lastVisit: effectiveLastVisit,
-    };
+    const [patientForResponse] = await withPatientAppointmentSummaries([patient]);
 
     res.json({
       success: true,

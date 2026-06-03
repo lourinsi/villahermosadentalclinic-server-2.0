@@ -119,6 +119,7 @@ export const markPastAppointmentsAsTbd = async (
               email: true,
               phone: true,
               profilePicture: true,
+              dateOfBirth: true,
             },
           }) as Promise<PatientIdentity | null>
         : Promise.resolve(null),

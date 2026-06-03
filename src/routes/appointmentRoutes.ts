@@ -7,6 +7,7 @@ import {
   updateAppointment,
   deleteAppointment,
   bookPublicAppointment,
+  fetchRecurringAppointmentChain,
   fetchAppointmentLogs,
   fetchPaymentLogs,
 } from "../controllers/appointmentController";
@@ -19,6 +20,9 @@ router.post("/public-book", bookPublicAppointment);
 
 // GET - Public availability (no auth required, anonymized)
 router.get("/public-availability", getPublicAppointmentAvailability);
+
+// GET - Recurring appointment chain preview
+router.get("/:id/recurrence-chain", fetchRecurringAppointmentChain);
 
 // GET - Appointment logs (supports public token or authenticated staff/patient)
 router.get("/:id/logs", fetchAppointmentLogs);

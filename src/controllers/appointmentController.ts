@@ -35,6 +35,12 @@ import {
   DoctorIdentity,
 } from "../utils/doctorIdentity";
 import {
+  buildInitialAppointmentRecurrence,
+  cancelRecurringSeriesAppointments,
+  getRecurringGeneratedAppointments,
+  reconcileAppointmentRecurrence,
+} from "../utils/appointmentRecurrence";
+import {
   getPatientDisplayName,
   getPatientSearchText,
   PatientIdentity,
@@ -102,6 +108,7 @@ const patientIdentitySelect = {
   email: true,
   phone: true,
   profilePicture: true,
+  dateOfBirth: true,
 } as const;
 
 const getActivePatientIdentities = async (patientIds: string[]): Promise<PatientIdentity[]> => {
@@ -191,6 +198,9 @@ const appointmentData = (appointment: Appointment, previousState?: Appointment) 
   status: appointment.status,
   paymentStatus: appointment.paymentStatus,
   cancellationReason: appointment.cancellationReason,
+  recurrence: appointment.recurrence,
+  isRecurring: appointment.isRecurring,
+  recurringSeriesId: appointment.recurringSeriesId,
   previousState,
   newState: appointment,
 });
@@ -203,6 +213,7 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     appointment.date,
     appointment.status || "scheduled"
   );
+  const recurrence = buildInitialAppointmentRecurrence((appointment as any).recurrence);
 
   return {
     id: `apt_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
@@ -226,6 +237,9 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     totalPaid: appointment.totalPaid || 0,
     balance: appointment.balance != null ? appointment.balance : Math.max(0, price - discount),
     transactions: appointment.transactions || null,
+    recurrence,
+    isRecurring: Boolean(recurrence?.enabled),
+    recurringSeriesId: appointment.recurringSeriesId || recurrence?.recurringSeriesId || null,
     createdAt: new Date(),
     updatedAt: new Date(),
     deleted: false,
@@ -254,6 +268,9 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "balance",
     "totalPaid",
     "transactions",
+    "recurrence",
+    "isRecurring",
+    "recurringSeriesId",
   ] as const;
 
   const data: Record<string, any> = {};
@@ -483,7 +500,16 @@ export const addAppointment = async (
 
     await cancelOverlappingPendingAppointments(appointments, newAppointment, changedBy, changedByName, doctorStaff);
 
-    const created = toAppointment(await prisma.appointment.create({ data: createData as any }));
+    let created = toAppointment(await prisma.appointment.create({ data: createData as any }));
+    created = await reconcileAppointmentRecurrence({
+      appointment: created,
+      allAppointments: [...appointments, created],
+      recurrenceInput: (appointmentInput as any).recurrence,
+      recurrenceInputProvided: Object.prototype.hasOwnProperty.call(appointmentInput as any, "recurrence"),
+      changedBy,
+      changedByName,
+      doctorStaff,
+    });
     const createdForResponse = withResolvedDoctor(
       withResolvedPatient(created as any, patientRecord ? [patientRecord] : []),
       doctorStaff
@@ -830,9 +856,20 @@ export const updateAppointment = async (
     const doctorStaff = await getActiveDoctorStaff();
     const { id } = req.params;
     const updates: Partial<Appointment> = req.body;
+    const recurrenceInputProvided = Object.prototype.hasOwnProperty.call(updates as any, "recurrence");
     const oldAppointment = appointments.find((appointment) => appointment.id === id);
     if (!oldAppointment || (isStaffRole(req) && isPatientCartStatus(oldAppointment.status))) {
       return res.status(404).json({ success: false, message: "Appointment not found" });
+    }
+    if (recurrenceInputProvided) {
+      const existingRecurrence = ((oldAppointment as any).recurrence && typeof (oldAppointment as any).recurrence === "object")
+        ? (oldAppointment as any).recurrence
+        : {};
+      const requestedRecurrence = (updates as any).recurrence;
+      (updates as any).recurrence =
+        requestedRecurrence && typeof requestedRecurrence === "object" && !Array.isArray(requestedRecurrence)
+          ? { ...existingRecurrence, ...requestedRecurrence }
+          : { ...existingRecurrence, enabled: Boolean(requestedRecurrence) };
     }
     if (
       Object.prototype.hasOwnProperty.call(updates, "paymentMethod") &&
@@ -947,8 +984,6 @@ export const updateAppointment = async (
     else if (updates.notes !== undefined && updates.notes !== oldAppointment.notes) logChangeType = "notes_update";
     else if (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus) logChangeType = "payment";
 
-    await createAppointmentLog(id, oldAppointment, updatedAppointment, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
-
     if (paymentAmount > 0 || (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus)) {
       await createPaymentLog(
         id,
@@ -962,12 +997,22 @@ export const updateAppointment = async (
       );
     }
 
-    const saved = toAppointment(
+    let saved = toAppointment(
       await prisma.appointment.update({
         where: { id },
         data: buildAppointmentUpdateData(updatedAppointment) as any,
       })
     );
+    saved = await reconcileAppointmentRecurrence({
+      appointment: saved,
+      allAppointments: appointments.map((appointment) => appointment.id === saved.id ? saved : appointment),
+      recurrenceInput: (updates as any).recurrence,
+      recurrenceInputProvided,
+      changedBy,
+      changedByName,
+      doctorStaff,
+    });
+    await createAppointmentLog(id, oldAppointment, saved, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
     const oldPatientRecord = oldAppointment.patientId === updatedAppointment.patientId
       ? patientRecord
       : await getActivePatientIdentity(oldAppointment.patientId);
@@ -1004,6 +1049,7 @@ export const updateAppointment = async (
       Object.prototype.hasOwnProperty.call(updates, "price") ||
       Object.prototype.hasOwnProperty.call(updates, "discount") ||
       Object.prototype.hasOwnProperty.call(updates, "notes") ||
+      Object.prototype.hasOwnProperty.call(updates, "recurrence") ||
       Object.prototype.hasOwnProperty.call(updates, "patientId") ||
       Object.prototype.hasOwnProperty.call(updates, "patientName");
 
@@ -1040,9 +1086,18 @@ export const deleteAppointment = async (
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
 
-    await prisma.appointment.update({
+    const deletedAppointment = toAppointment(await prisma.appointment.update({
       where: { id: req.params.id },
-      data: { deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+      data: { status: "cancelled", deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+    }));
+
+    await cancelRecurringSeriesAppointments({
+      appointment: deletedAppointment,
+      changedBy: (req as any).user?.id || (req as any).user?.username || "admin",
+      changedByName:
+        (req as any).user?.name ||
+        (req as any).user?.username ||
+        "Admin",
     });
 
     if (appointment.id) {
@@ -1100,6 +1155,7 @@ export const bookPublicAppointment = async (
       paymentMethod: paymentMethodFromClient,
       price: clientPrice,
       discount: clientDiscount,
+      recurrence,
     } = req.body;
 
     if (!firstName || !lastName || !phone || !date || !time || type == null) {
@@ -1195,6 +1251,7 @@ export const bookPublicAppointment = async (
       balance:
         (clientPrice ?? getAppointmentPrice(type)) - (clientDiscount ?? 0) - (totalPaidFromClient || 0),
       transactions: null,
+      recurrence,
       createdAt: new Date(),
       updatedAt: new Date(),
       deleted: false,
@@ -1209,7 +1266,16 @@ export const bookPublicAppointment = async (
       await cancelOverlappingPendingAppointments(appointments, newAppointment, "patient", patientDisplayName, doctorStaff);
     }
 
-    const created = toAppointment(await prisma.appointment.create({ data: createData as any }));
+    let created = toAppointment(await prisma.appointment.create({ data: createData as any }));
+    created = await reconcileAppointmentRecurrence({
+      appointment: created,
+      allAppointments: [...appointments, created],
+      recurrenceInput: recurrence,
+      recurrenceInputProvided: Object.prototype.hasOwnProperty.call(req.body as any, "recurrence"),
+      changedBy: "patient",
+      changedByName: patientDisplayName,
+      doctorStaff,
+    });
     const createdForResponse = withResolvedDoctor(
       withResolvedPatient(created as any, [patient as PatientIdentity]),
       doctorStaff
@@ -1328,6 +1394,83 @@ export const fetchAppointmentLogs = async (req: Request<IdParams>, res: Response
     res.status(500).json({
       success: false,
       message: "Error fetching logs",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const fetchRecurringAppointmentChain = async (req: Request<IdParams>, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: "Appointment ID is required" });
+
+    try {
+      const authToken = (req as any).cookies?.authToken || (req.headers.authorization || "").split(" ")[1];
+      if (authToken) {
+        try {
+          (req as any).user = jwt.verify(authToken, JWT_SECRET);
+        } catch {
+          // ignore invalid token
+        }
+      }
+    } catch {
+      // ignore auth cookie/header parsing failures
+    }
+
+    const appointment = await prisma.appointment.findUnique({ where: { id } });
+    if (!appointment || appointment.deleted) {
+      return res.status(404).json({ success: false, message: "Appointment not found" });
+    }
+
+    const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
+    const authUser = (req as any).user;
+    const isAllowed =
+      isStaffRole(req) ||
+      (authUser && (authUser.id === appointment.patientId || authUser.patientId === appointment.patientId)) ||
+      resolvePublicAppointmentToken(publicToken) === id;
+
+    if (!isAllowed) return res.status(403).json({ success: false, message: "Not authorized to view recurring appointments" });
+
+    const chain = await getRecurringGeneratedAppointments(id);
+    const chainForResponse = chain.map((item) => ({
+      id: item.id,
+      date: item.date,
+      time: item.time,
+      duration: item.duration,
+      status: item.status,
+      patientName: item.patientName,
+      doctor: item.doctor,
+      recurrence: item.recurrence,
+      isRecurring: item.isRecurring,
+      recurringSeriesId: item.recurringSeriesId,
+    }));
+
+    console.info("[APPOINTMENT RECURRENCE CHAIN GET] Linked recurring appointments", {
+      appointmentId: id,
+      linkedCount: chainForResponse.length,
+      linkedAppointments: chainForResponse.map((item) => ({
+        id: item.id,
+        date: item.date,
+        time: item.time,
+        status: item.status,
+        recurringSeriesId: item.recurringSeriesId,
+        generatedFromId:
+          (item.recurrence as any)?.generatedFromId ||
+          (item.recurrence as any)?.sourceAppointmentId ||
+          null,
+      })),
+    });
+
+    res.json({
+      success: true,
+      message: "Recurring appointment chain retrieved successfully",
+      data: chainForResponse,
+    });
+  } catch (error) {
+    console.error("[APPOINTMENT RECURRENCE CHAIN GET] Error fetching recurring chain:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching recurring appointment chain",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }

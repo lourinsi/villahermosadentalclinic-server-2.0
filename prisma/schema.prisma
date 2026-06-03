@@ -96,6 +96,9 @@ model Appointment {
   balance            Float?
   totalPaid          Float?
   transactions       Json?
+  recurrence         Json?
+  isRecurring        Boolean   @default(false)
+  recurringSeriesId  String?
   createdAt          DateTime?
   updatedAt          DateTime?
   deleted            Boolean   @default(false)
@@ -107,20 +110,54 @@ model Appointment {
   @@index([date])
   @@index([status])
   @@index([paymentStatus])
+  @@index([recurringSeriesId])
   @@map("appointments")
 }
 
+model RecurringSeries {
+  id                String    @id
+  rootAppointmentId String
+  interval          String
+  customDate        String?
+  status            String
+  createdAt         DateTime?
+  updatedAt         DateTime?
+  stoppedAt         DateTime?
+
+  @@index([rootAppointmentId])
+  @@index([status])
+  @@map("recurring_series")
+}
+
+model RecurringOccurrence {
+  id                  String    @id
+  seriesId            String
+  appointmentId       String    @unique
+  parentAppointmentId String?
+  sequence            Int
+  generatedForDate    String
+  status              String
+  createdAt           DateTime?
+  updatedAt           DateTime?
+
+  @@index([seriesId])
+  @@index([parentAppointmentId])
+  @@index([generatedForDate])
+  @@index([status])
+  @@map("recurring_occurrences")
+}
+
 model AppointmentLog {
-  id             String    @id
-  appointmentId  String
-  previousState  Json
-  newState       Json
-  changedBy      String
-  changedByName  String?
-  changedAt      DateTime?
-  changeType     String
-  amount         Float?
-  notes          String?
+  id            String    @id
+  appointmentId String
+  previousState Json
+  newState      Json
+  changedBy     String
+  changedByName String?
+  changedAt     DateTime?
+  changeType    String
+  amount        Float?
+  notes         String?
 
   @@index([appointmentId])
   @@index([changedAt])
@@ -128,20 +165,20 @@ model AppointmentLog {
 }
 
 model Payment {
-  id            String    @id
-  appointmentId String
-  patientId     String?
-  amount        Float
-  method        String
-  date          String
+  id                  String    @id
+  appointmentId       String
+  patientId           String?
+  amount              Float
+  method              String
+  date                String
   appointmentSnapshot Json?
-  transactionId String?
-  notes         String?
-  status        String?
-  createdAt     DateTime?
-  updatedAt     DateTime?
-  deleted       Boolean   @default(false)
-  deletedAt     DateTime?
+  transactionId       String?
+  notes               String?
+  status              String?
+  createdAt           DateTime?
+  updatedAt           DateTime?
+  deleted             Boolean   @default(false)
+  deletedAt           DateTime?
 
   @@index([appointmentId])
   @@index([patientId])
@@ -205,7 +242,7 @@ model Staff {
 }
 
 model StaffFinancialRecord {
-  id                String @id
+  id                String  @id
   staffId           String
   staffName         String
   type              String
@@ -221,36 +258,36 @@ model StaffFinancialRecord {
 }
 
 model StaffAttendance {
-  id            String @id
+  id            String  @id
   staffId       String
   staffName     String
   date          String?
   status        String?
-  hoursWorked   Float  @default(0)
-  daysPresent   Int    @default(0)
-  daysAbsent    Int    @default(0)
-  overtimeHours Float  @default(0)
+  hoursWorked   Float   @default(0)
+  daysPresent   Int     @default(0)
+  daysAbsent    Int     @default(0)
+  overtimeHours Float   @default(0)
 
   @@index([staffId])
   @@map("staff_attendance")
 }
 
 model Notification {
-  id        String    @id @default(uuid())
-  userId    String
-  title     String
-  message   String
-  type      String
-  appointmentId String?
-  createdAt DateTime?
-  updatedAt DateTime?
-  isRead    Boolean   @default(false)
-  link      String?
-  isLog     Boolean   @default(false)
-  metadata  Json?
+  id                String    @id @default(uuid())
+  userId            String
+  title             String
+  message           String
+  type              String
+  appointmentId     String?
+  createdAt         DateTime?
+  updatedAt         DateTime?
+  isRead            Boolean   @default(false)
+  link              String?
+  isLog             Boolean   @default(false)
+  metadata          Json?
   notificationImage String?
-  deleted   Boolean   @default(false)
-  deletedAt DateTime?
+  deleted           Boolean   @default(false)
+  deletedAt         DateTime?
 
   @@index([userId])
   @@index([appointmentId])
@@ -260,18 +297,18 @@ model Notification {
 }
 
 model FinanceRecord {
-  id          String    @id
-  patientId   String?
-  type        String
-  amount      Float
-  date        String
+  id                  String    @id
+  patientId           String?
+  type                String
+  amount              Float
+  date                String
   appointmentSnapshot Json?
-  description String?
-  isSeeding   Boolean?
-  createdAt   DateTime?
-  updatedAt   DateTime?
-  deleted     Boolean   @default(false)
-  deletedAt   DateTime?
+  description         String?
+  isSeeding           Boolean?
+  createdAt           DateTime?
+  updatedAt           DateTime?
+  deleted             Boolean   @default(false)
+  deletedAt           DateTime?
 
   @@index([patientId])
   @@index([type])

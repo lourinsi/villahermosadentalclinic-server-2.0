@@ -23,12 +23,19 @@ export interface Appointment {
   paymentMethod?: string; // Payment method (e.g., 'cash', 'card', 'check')
   balance?: number;
   totalPaid?: number;
+  recurrence?: any;
+  isRecurring?: boolean;
+  recurringSeriesId?: string | null;
   patientFirstName?: string | null;
   patientLastName?: string | null;
   patientEmail?: string | null;
   patientPhone?: string | null;
   patientProfile?: string | null;
   patientProfilePicture?: string | null;
+  patientDateOfBirth?: string | null;
+  patientDob?: string | null;
+  patientBirthDate?: string | null;
+  patientBirthday?: string | null;
   profilePicture?: string | null;
   patient?: {
     id?: string;
@@ -39,6 +46,8 @@ export interface Appointment {
     phone?: string | null;
     profilePicture?: string | null;
     profilePictureUrl?: string | null;
+    dateOfBirth?: string | null;
+    dob?: string | null;
   };
   // Deprecated: transactions are now stored in payments collection. Keep for backward compat only.
   transactions?: {
