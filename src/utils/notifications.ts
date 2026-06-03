@@ -59,6 +59,7 @@ type AppointmentNotificationData = {
   status?: string;
   paymentStatus?: string;
   cancellationReason?: string;
+  treatmentNotes?: string;
   previousState?: AppointmentNotificationState;
   newState?: AppointmentNotificationState;
   changedFields?: { [key: string]: any };
@@ -428,6 +429,20 @@ const buildAppointmentChangeSummary = (
   }
 
   if (
+    hasPreviousState &&
+    normalizeText(previousState.treatmentNotes) !== normalizeText(newState.treatmentNotes) &&
+    (previousState.treatmentNotes || newState.treatmentNotes)
+  ) {
+    addChangeItem(
+      items,
+      "treatmentNotes",
+      "Treatment Notes",
+      previousState.treatmentNotes ? "Previous treatment notes" : "No treatment notes",
+      newState.treatmentNotes ? "Updated treatment notes" : "No treatment notes"
+    );
+  }
+
+  if (
     fallbackStatusChange?.from &&
     fallbackStatusChange?.to &&
     !items.some((item) => item.field === fallbackStatusChange.field)
@@ -493,6 +508,7 @@ const buildAppointmentSnapshotMetadata = (
     totalPaid: data.totalPaid,
     status: data.status,
     paymentStatus: data.paymentStatus,
+    treatmentNotes: data.treatmentNotes,
   };
 
   return {
@@ -520,6 +536,8 @@ const detailedNotificationTitle = (changes: ChangeSummaryItem[]): string => {
       return "Price Updated";
     case "notes":
       return "Appointment Notes Updated";
+    case "treatmentNotes":
+      return "Treatment Notes Updated";
     default:
       return "Appointment Updated";
   }
@@ -557,6 +575,8 @@ const detailNotificationMessage = (
       return `${owner} appointment price was adjusted${fromTo}.`;
     case "notes":
       return `${owner} appointment notes were updated.`;
+    case "treatmentNotes":
+      return `${owner} appointment treatment notes were updated.`;
     default:
       return `${owner} appointment ${change.label.toLowerCase()} was updated${fromTo}.`;
   }

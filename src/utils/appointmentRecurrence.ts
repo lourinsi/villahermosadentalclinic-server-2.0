@@ -68,7 +68,28 @@ const normalizeRecurrenceOption = (option?: unknown): RecurringAppointmentOption
 
 const normalizeDateOnly = (date?: unknown): string => {
   const value = String(date || "").trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (isoMatch) return value;
+
+  const slashMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(value);
+  if (slashMatch) {
+    const first = Number(slashMatch[1]);
+    const second = Number(slashMatch[2]);
+    const year = Number(slashMatch[3]);
+    const day = first > 12 ? first : second > 12 ? second : first;
+    const month = first > 12 ? second : second > 12 ? first : second;
+    const parsed = new Date(year, month - 1, day);
+
+    if (
+      parsed.getFullYear() === year &&
+      parsed.getMonth() === month - 1 &&
+      parsed.getDate() === day
+    ) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  return "";
 };
 
 const parseDateOnly = (date?: unknown): Date | null => {
@@ -973,12 +994,23 @@ export const getRecurringGeneratedAppointments = async (
 };
 
 const getRecurrenceTargetDate = (appointmentDate: string, recurrence: AppointmentRecurrencePayload) => {
+  const sourceDate = parseDateOnly(appointmentDate);
+
   if (recurrence.option === "Custom") {
     const customDate = parseDateOnly(recurrence.customDate);
-    if (customDate) return customDate;
+    if (!customDate || !sourceDate) return null;
+
+    const today = parseDateOnly(formatDateOnly(new Date())) || new Date();
+    const dayAfterSource = new Date(
+      sourceDate.getFullYear(),
+      sourceDate.getMonth(),
+      sourceDate.getDate() + 1
+    );
+    const minimumDate = dayAfterSource.getTime() > today.getTime() ? dayAfterSource : today;
+
+    return customDate.getTime() >= minimumDate.getTime() ? customDate : null;
   }
 
-  const sourceDate = parseDateOnly(appointmentDate);
   if (!sourceDate) return null;
 
   const monthsByOption: Record<RecurringAppointmentOption, number> = {
@@ -1105,6 +1137,7 @@ const buildGeneratedAppointmentData = ({
     doctorId: source.doctorId || null,
     duration: normalizeAppointmentDuration(source.duration),
     notes: source.notes || "",
+    treatmentNotes: (source as any).treatmentNotes || "",
     serviceType: source.serviceType || null,
     status: getPastRestrictedAppointmentStatus(
       generatedDate,

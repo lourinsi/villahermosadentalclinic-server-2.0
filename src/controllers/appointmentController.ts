@@ -198,6 +198,7 @@ const appointmentData = (appointment: Appointment, previousState?: Appointment) 
   status: appointment.status,
   paymentStatus: appointment.paymentStatus,
   cancellationReason: appointment.cancellationReason,
+  treatmentNotes: appointment.treatmentNotes,
   recurrence: appointment.recurrence,
   isRecurring: appointment.isRecurring,
   recurringSeriesId: appointment.recurringSeriesId,
@@ -229,6 +230,7 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     doctorId: appointment.doctorId || null,
     duration: normalizeAppointmentDuration(appointment.duration),
     notes: appointment.notes || "",
+    treatmentNotes: appointment.treatmentNotes || "",
     serviceType: appointment.serviceType || null,
     status,
     cancellationReason: appointment.cancellationReason || null,
@@ -260,6 +262,7 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "doctorId",
     "duration",
     "notes",
+    "treatmentNotes",
     "serviceType",
     "status",
     "cancellationReason",
@@ -982,6 +985,7 @@ export const updateAppointment = async (
     else if (updates.status && updates.status !== oldStatus) logChangeType = "status_change";
     else if ((updates.date && updates.date !== oldAppointment.date) || (updates.time && updates.time !== oldAppointment.time)) logChangeType = "rescheduled";
     else if (updates.notes !== undefined && updates.notes !== oldAppointment.notes) logChangeType = "notes_update";
+    else if ((updates as any).treatmentNotes !== undefined && (updates as any).treatmentNotes !== (oldAppointment as any).treatmentNotes) logChangeType = "notes_update";
     else if (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus) logChangeType = "payment";
 
     if (paymentAmount > 0 || (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus)) {
@@ -1049,6 +1053,7 @@ export const updateAppointment = async (
       Object.prototype.hasOwnProperty.call(updates, "price") ||
       Object.prototype.hasOwnProperty.call(updates, "discount") ||
       Object.prototype.hasOwnProperty.call(updates, "notes") ||
+      Object.prototype.hasOwnProperty.call(updates, "treatmentNotes") ||
       Object.prototype.hasOwnProperty.call(updates, "recurrence") ||
       Object.prototype.hasOwnProperty.call(updates, "patientId") ||
       Object.prototype.hasOwnProperty.call(updates, "patientName");
@@ -1242,6 +1247,7 @@ export const bookPublicAppointment = async (
       doctor: appointmentDoctor,
       doctorId: resolvedDoctor.doctorId,
       notes: notes || "",
+      treatmentNotes: req.body.treatmentNotes || "",
       serviceType: serviceType || "",
       status: requestedStatus,
       cancellationReason: null,

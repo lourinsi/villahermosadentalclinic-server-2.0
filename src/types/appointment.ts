@@ -15,6 +15,7 @@ export interface Appointment {
   doctorProfilePicture?: string | null;
   duration?: number; // in minutes
   notes?: string;
+  treatmentNotes?: string;
   serviceType?: string;
   // Status is flexible to accept any value from the JSON configuration
   status?: string;
