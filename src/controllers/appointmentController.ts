@@ -25,6 +25,7 @@ import { createPaymentLog, getPaymentLogs } from "../utils/paymentLogs";
 import {
   getPastRestrictedAppointmentStatus,
   markPastAppointmentsAsTbd,
+  readAppointmentsForList,
   readAppointmentsWithLifecycle,
 } from "../utils/appointmentStatusLifecycle";
 import {
@@ -582,8 +583,6 @@ export const getAppointments = async (
   res: Response<ApiResponse<Appointment[]>>
 ) => {
   try {
-    const appointments = await readAppointmentsWithLifecycle();
-    const doctorStaff = await getActiveDoctorStaff();
     const {
       startDate,
       endDate,
@@ -602,6 +601,8 @@ export const getAppointments = async (
       sortBy,
       sortDirection,
     } = req.query as Record<string, string>;
+    const appointments = await readAppointmentsForList({ startDate, endDate });
+    const doctorStaff = await getActiveDoctorStaff();
     const shouldPaginate = Boolean(page || limit);
     const pageNum = Math.max(1, parseInt(page || "1", 10) || 1);
     const limitNum = Math.max(1, Math.min(100, parseInt(limit || "20", 10) || 20));
@@ -762,9 +763,9 @@ export const getPublicAppointmentAvailability = async (
   res: Response<ApiResponse<Appointment[]>>
 ) => {
   try {
-    const appointments = await readAppointmentsWithLifecycle();
-    const doctorStaff = await getActiveDoctorStaff();
     const { startDate, endDate, doctor } = req.query as Record<string, string>;
+    const appointments = await readAppointmentsForList({ startDate, endDate });
+    const doctorStaff = await getActiveDoctorStaff();
 
     let filtered = appointments.filter((appointment) => !appointment.deleted);
 
@@ -1438,18 +1439,36 @@ export const fetchRecurringAppointmentChain = async (req: Request<IdParams>, res
     if (!isAllowed) return res.status(403).json({ success: false, message: "Not authorized to view recurring appointments" });
 
     const chain = await getRecurringGeneratedAppointments(id);
-    const chainForResponse = chain.map((item) => ({
-      id: item.id,
-      date: item.date,
-      time: item.time,
-      duration: item.duration,
-      status: item.status,
-      patientName: item.patientName,
-      doctor: item.doctor,
-      recurrence: item.recurrence,
-      isRecurring: item.isRecurring,
-      recurringSeriesId: item.recurringSeriesId,
-    }));
+    const chainAppointmentIds = chain.map((item) => String(item.id || "")).filter(Boolean);
+    const recurringOccurrences = chainAppointmentIds.length
+      ? await (prisma as any).recurringOccurrence.findMany({
+          where: { appointmentId: { in: chainAppointmentIds } },
+        })
+      : [];
+    const occurrenceByAppointmentId = new Map(
+      recurringOccurrences.map((occurrence: any) => [String(occurrence.appointmentId), occurrence])
+    );
+
+    const chainForResponse = chain.map((item: Appointment) => {
+      const occurrence: any = occurrenceByAppointmentId.get(String(item.id || ""));
+      return {
+        id: item.id,
+        date: item.date,
+        time: item.time,
+        duration: item.duration,
+        status: item.status,
+        paymentStatus: item.paymentStatus || null,
+        patientName: item.patientName,
+        doctor: item.doctor,
+        recurrence: item.recurrence,
+        isRecurring: item.isRecurring || false,
+        recurringSeriesId: item.recurringSeriesId,
+        recurringOccurrenceId: occurrence?.id || null,
+        recurringOccurrenceSequence:
+          occurrence?.sequence != null ? Number(occurrence.sequence) : null,
+        recurringOccurrenceStatus: occurrence?.status || null,
+      };
+    });
 
     console.info("[APPOINTMENT RECURRENCE CHAIN GET] Linked recurring appointments", {
       appointmentId: id,
@@ -1460,6 +1479,9 @@ export const fetchRecurringAppointmentChain = async (req: Request<IdParams>, res
         time: item.time,
         status: item.status,
         recurringSeriesId: item.recurringSeriesId,
+        recurringOccurrenceId: item.recurringOccurrenceId,
+        sequence: item.recurringOccurrenceSequence,
+        recurrenceStatus: item.recurringOccurrenceStatus,
         generatedFromId:
           (item.recurrence as any)?.generatedFromId ||
           (item.recurrence as any)?.sourceAppointmentId ||

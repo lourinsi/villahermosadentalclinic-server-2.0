@@ -27,6 +27,17 @@ export interface Appointment {
   recurrence?: any;
   isRecurring?: boolean;
   recurringSeriesId?: string | null;
+  recurringSeriesRootAppointmentId?: string | null;
+  recurringSeriesStatus?: string | null;
+  recurringSeriesActiveOccurrenceCount?: number;
+  recurringSeriesActiveChildCount?: number;
+  hasActiveRecurringChildren?: boolean;
+  recurringOccurrenceId?: string | null;
+  recurringOccurrenceStatus?: string | null;
+  recurringOccurrenceSequence?: number | null;
+  recurringParentAppointmentId?: string | null;
+  isRecurringSeriesHead?: boolean;
+  isRecurringGeneratedAppointment?: boolean;
   patientFirstName?: string | null;
   patientLastName?: string | null;
   patientEmail?: string | null;

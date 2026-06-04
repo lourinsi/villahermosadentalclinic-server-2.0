@@ -7,13 +7,19 @@ import { DoctorIdentity } from "./doctorIdentity";
 import { getPastRestrictedAppointmentStatus } from "./appointmentStatusLifecycle";
 import { prisma } from "../lib/prisma";
 
-const RECURRING_APPOINTMENT_OPTIONS = ["1 month", "3 months", "6 months", "Custom"] as const;
-type RecurringAppointmentOption = typeof RECURRING_APPOINTMENT_OPTIONS[number];
+const RECURRING_APPOINTMENT_OPTIONS = ["Weekly", "Monthly", "Every 2 months", "Every 3 months", "Every 6 months", "Custom"] as const;
+const LEGACY_RECURRING_APPOINTMENT_OPTIONS = ["1 month", "3 months", "6 months"] as const;
+const REPEAT_COUNT_OPTIONS = [1, 2, 3, 4] as const;
+type RepeatCount = typeof REPEAT_COUNT_OPTIONS[number];
+type RecurringAppointmentOption =
+  | typeof RECURRING_APPOINTMENT_OPTIONS[number]
+  | typeof LEGACY_RECURRING_APPOINTMENT_OPTIONS[number];
 
 export type AppointmentRecurrencePayload = {
   enabled: boolean;
   option: RecurringAppointmentOption;
   customDate?: string | null;
+  repeatCount?: RepeatCount;
   generatedAppointmentId?: string | null;
   generatedAppointmentDate?: string | null;
   generatedFromId?: string | null;
@@ -41,7 +47,7 @@ type ReconcileAppointmentRecurrenceArgs = {
   doctorStaff?: DoctorIdentity[];
 };
 
-const DEFAULT_RECURRING_APPOINTMENT_OPTION: RecurringAppointmentOption = "1 month";
+const DEFAULT_RECURRING_APPOINTMENT_OPTION: RecurringAppointmentOption = "Monthly";
 const MAX_RECURRING_DAYS_TO_CHECK = 365;
 const RECURRENCE_SERIES_STATUS_ACTIVE = "active";
 const RECURRENCE_SERIES_STATUS_STOPPED = "stopped";
@@ -61,9 +67,61 @@ const normalizeId = (value?: unknown): string | null => {
 
 const normalizeRecurrenceOption = (option?: unknown): RecurringAppointmentOption => {
   const value = String(option || "").trim();
-  return RECURRING_APPOINTMENT_OPTIONS.includes(value as RecurringAppointmentOption)
-    ? (value as RecurringAppointmentOption)
-    : DEFAULT_RECURRING_APPOINTMENT_OPTION;
+  const lowerValue = value.toLowerCase();
+  const aliases: Record<string, RecurringAppointmentOption> = {
+    weekly: "Weekly",
+    "every week": "Weekly",
+    monthly: "Monthly",
+    "1 month": "Monthly",
+    "every month": "Monthly",
+    "2 months": "Every 2 months",
+    "every 2 months": "Every 2 months",
+    "3 months": "Every 3 months",
+    "every 3 months": "Every 3 months",
+    "6 months": "Every 6 months",
+    "every 6 months": "Every 6 months",
+    custom: "Custom",
+  };
+
+  if (aliases[lowerValue]) return aliases[lowerValue];
+  if (RECURRING_APPOINTMENT_OPTIONS.includes(value as typeof RECURRING_APPOINTMENT_OPTIONS[number])) {
+    return value as RecurringAppointmentOption;
+  }
+  if (LEGACY_RECURRING_APPOINTMENT_OPTIONS.includes(value as typeof LEGACY_RECURRING_APPOINTMENT_OPTIONS[number])) {
+    return value as RecurringAppointmentOption;
+  }
+
+  return DEFAULT_RECURRING_APPOINTMENT_OPTION;
+};
+
+const normalizeRepeatCount = (value?: unknown): RepeatCount => {
+  const count = Number(value);
+  return REPEAT_COUNT_OPTIONS.includes(count as RepeatCount) ? (count as RepeatCount) : 1;
+};
+
+const areRecurrenceRulesEqual = (
+  left?: AppointmentRecurrencePayload | null,
+  right?: AppointmentRecurrencePayload | null
+): boolean => {
+  const normalizedLeft = normalizeAppointmentRecurrence(left) || {
+    enabled: false,
+    option: DEFAULT_RECURRING_APPOINTMENT_OPTION,
+    customDate: null,
+    repeatCount: 1,
+  };
+  const normalizedRight = normalizeAppointmentRecurrence(right) || {
+    enabled: false,
+    option: DEFAULT_RECURRING_APPOINTMENT_OPTION,
+    customDate: null,
+    repeatCount: 1,
+  };
+
+  return (
+    normalizedLeft.enabled === normalizedRight.enabled &&
+    normalizedLeft.option === normalizedRight.option &&
+    normalizeDateOnly(normalizedLeft.customDate) === normalizeDateOnly(normalizedRight.customDate) &&
+    normalizeRepeatCount(normalizedLeft.repeatCount) === normalizeRepeatCount(normalizedRight.repeatCount)
+  );
 };
 
 const normalizeDateOnly = (date?: unknown): string => {
@@ -115,6 +173,14 @@ const formatDateOnly = (date: Date) => {
   return `${date.getFullYear()}-${month}-${day}`;
 };
 
+const addDaysToDateOnly = (date: string, days: number) => {
+  const parsed = parseDateOnly(date);
+  if (!parsed) return "";
+
+  parsed.setDate(parsed.getDate() + days);
+  return formatDateOnly(parsed);
+};
+
 const addMonthsClamped = (date: Date, months: number) => {
   const targetYear = date.getFullYear();
   const targetMonth = date.getMonth() + months;
@@ -122,6 +188,13 @@ const addMonthsClamped = (date: Date, months: number) => {
   const day = Math.min(date.getDate(), lastDayOfTargetMonth);
   return new Date(targetYear, targetMonth, day);
 };
+
+const dateDiffInDays = (start: Date, end: Date) =>
+  Math.round(
+    (new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime() -
+      new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime()) /
+      86400000
+  );
 
 export const normalizeAppointmentRecurrence = (
   recurrence?: unknown,
@@ -140,6 +213,7 @@ export const normalizeAppointmentRecurrence = (
       enabled: false,
       option: normalizeRecurrenceOption(fallbackRecord.option),
       customDate: normalizeDateOnly(fallbackRecord.customDate) || null,
+      repeatCount: normalizeRepeatCount(fallbackRecord.repeatCount),
       recurringSeriesId: fallbackRecord.recurringSeriesId ?? null,
     };
   }
@@ -156,6 +230,7 @@ export const normalizeAppointmentRecurrence = (
     enabled,
     option: normalizeRecurrenceOption(record.option ?? fallbackRecord.option),
     customDate: normalizeDateOnly(record.customDate ?? fallbackRecord.customDate) || null,
+    repeatCount: normalizeRepeatCount(record.repeatCount ?? fallbackRecord.repeatCount),
     generatedAppointmentId:
       record.generatedAppointmentId ?? fallbackRecord.generatedAppointmentId ?? null,
     generatedAppointmentDate:
@@ -207,11 +282,17 @@ const formatRecurringLogDate = (date?: string | null) => {
   });
 };
 
-const makeRecurringSeriesId = () =>
-  `rec_series_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+const makeRecurringSeriesId = (appointmentId?: string | null, date?: string | null) => {
+  const idPart = appointmentId ? String(appointmentId).replace(/[^A-Za-z0-9_-]/g, "") : `auto${Date.now()}`;
+  const normalizedDate = normalizeDateOnly(date) || String(Date.now());
+  return `rec_series_${idPart}_${normalizedDate}`;
+};
 
 const makeRecurringOccurrenceId = () =>
   `rec_occ_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+const makeAppointmentLogId = () =>
+  `apt_log_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
 const getAppointmentRecurringSeriesId = (
   appointment?: Appointment | null,
@@ -284,6 +365,22 @@ const isInactiveAppointment = (appointment?: Appointment | null) =>
     normalizeStatus(appointment.status) === "cancelled"
   );
 
+const RECURRING_SERIES_MEMBER_STATUSES = new Set(["scheduled", "reserved"]);
+
+const isRecurringSeriesMemberAppointment = (appointment?: Appointment | null) =>
+  Boolean(
+    appointment &&
+      !appointment.deleted &&
+      RECURRING_SERIES_MEMBER_STATUSES.has(normalizeStatus(appointment.status))
+  );
+
+const getRecurringSeriesEndDate = (
+  rows: Array<{ appointment: Appointment }>
+): string | null => {
+  const lastAppointment = rows[rows.length - 1]?.appointment;
+  return normalizeDateOnly(lastAppointment?.date) || null;
+};
+
 const sortAppointmentsBySchedule = <T extends { appointment: Appointment; occurrence?: any }>(
   rows: T[]
 ) =>
@@ -316,16 +413,26 @@ const ensureRecurringSeriesForAppointment = async (
     if (existingSeriesId) {
       const existingSeries = await recurringSeries.findUnique({ where: { id: existingSeriesId } });
       if (existingSeries) {
-        await recurringSeries.update({
-          where: { id: existingSeriesId },
-          data: {
-            interval: recurrence.option,
-            customDate: recurrence.customDate || null,
-            status: recurrence.enabled ? RECURRENCE_SERIES_STATUS_ACTIVE : RECURRENCE_SERIES_STATUS_STOPPED,
-            stoppedAt: recurrence.enabled ? null : now,
-            updatedAt: now,
-          },
-        });
+        const isSeriesRootAppointment = appointment.id === existingSeries.rootAppointmentId;
+        const shouldUpdateSeries = recurrence.enabled || isSeriesRootAppointment;
+
+        if (shouldUpdateSeries) {
+          await recurringSeries.update({
+            where: { id: existingSeriesId },
+            data: {
+              interval: recurrence.option,
+              customDate: recurrence.customDate || null,
+              startDate: existingSeries.startDate || appointment.date || null,
+              endDate: existingSeries.endDate || appointment.date || null,
+              status: recurrence.enabled
+                ? RECURRENCE_SERIES_STATUS_ACTIVE
+                : RECURRENCE_SERIES_STATUS_STOPPED,
+              stoppedAt: recurrence.enabled ? null : existingSeries.stoppedAt || now,
+              updatedAt: now,
+            },
+          });
+        }
+
         return existingSeriesId;
       }
     }
@@ -333,16 +440,23 @@ const ensureRecurringSeriesForAppointment = async (
     const parentAppointmentId = normalizeId(
       recurrence.generatedFromId || recurrence.sourceAppointmentId
     );
+    if (!recurrence.enabled && parentAppointmentId) {
+      return existingSeriesId;
+    }
+
     if (parentAppointmentId) {
       const parentOccurrence = await recurringOccurrence.findFirst({
         where: { appointmentId: parentAppointmentId },
       });
       if (parentOccurrence?.seriesId) {
+        const parentSeries = await recurringSeries.findUnique({ where: { id: parentOccurrence.seriesId } });
         await recurringSeries.update({
           where: { id: parentOccurrence.seriesId },
           data: {
             interval: recurrence.option,
             customDate: recurrence.customDate || null,
+            startDate: parentSeries?.startDate || appointment.date || null,
+            endDate: parentSeries?.endDate || appointment.date || null,
             status: RECURRENCE_SERIES_STATUS_ACTIVE,
             stoppedAt: null,
             updatedAt: now,
@@ -362,8 +476,12 @@ const ensureRecurringSeriesForAppointment = async (
         data: {
           interval: recurrence.option,
           customDate: recurrence.customDate || null,
-          status: recurrence.enabled ? RECURRENCE_SERIES_STATUS_ACTIVE : RECURRENCE_SERIES_STATUS_STOPPED,
-          stoppedAt: recurrence.enabled ? null : now,
+          startDate: rootSeries.startDate || appointment.date || null,
+          endDate: rootSeries.endDate || appointment.date || null,
+          status: recurrence.enabled
+            ? RECURRENCE_SERIES_STATUS_ACTIVE
+            : RECURRENCE_SERIES_STATUS_STOPPED,
+          stoppedAt: recurrence.enabled ? null : rootSeries.stoppedAt || now,
           updatedAt: now,
         },
       });
@@ -376,10 +494,12 @@ const ensureRecurringSeriesForAppointment = async (
 
     const createdSeries = await recurringSeries.create({
       data: {
-        id: makeRecurringSeriesId(),
+        id: makeRecurringSeriesId(appointment.id, appointment.date),
         rootAppointmentId: appointment.id,
         interval: recurrence.option,
         customDate: recurrence.customDate || null,
+        startDate: appointment.date || null,
+        endDate: appointment.date || null,
         status: RECURRENCE_SERIES_STATUS_ACTIVE,
         createdAt: now,
         updatedAt: now,
@@ -473,7 +593,7 @@ const getActiveRecurringSeriesRows = async (seriesId?: string | null) => {
       }))
       .filter(
         (row: { occurrence: any; appointment?: Appointment }): row is { occurrence: any; appointment: Appointment } =>
-          Boolean(row.appointment && !isInactiveAppointment(row.appointment))
+          isRecurringSeriesMemberAppointment(row.appointment)
       )
   );
 };
@@ -491,11 +611,48 @@ const promoteRecurringSeriesHead = async (seriesId?: string | null) => {
     const now = new Date();
 
     if (!activeRows.length) {
+      await (prisma as any).recurringOccurrence.updateMany({
+        where: { seriesId: id },
+        data: {
+          status: RECURRENCE_OCCURRENCE_STATUS_CANCELLED,
+          updatedAt: now,
+        },
+      });
       await recurringSeries.update({
         where: { id },
         data: {
+          endDate: null,
           status: RECURRENCE_SERIES_STATUS_STOPPED,
-          stoppedAt: now,
+          stoppedAt: series.stoppedAt || now,
+          updatedAt: now,
+        },
+      });
+      return;
+    }
+
+    if (activeRows.length === 1) {
+      const onlyAppointment = activeRows[0].appointment;
+
+      // Keep the single active appointment's recurrence metadata intact for history.
+      // Only cancel other (non-active) occurrences and mark the series stopped.
+      await (prisma as any).recurringOccurrence.updateMany({
+        where: {
+          seriesId: id,
+          appointmentId: { not: onlyAppointment.id },
+        },
+        data: {
+          status: RECURRENCE_OCCURRENCE_STATUS_CANCELLED,
+          updatedAt: now,
+        },
+      });
+
+      await recurringSeries.update({
+        where: { id },
+        data: {
+          rootAppointmentId: onlyAppointment.id || series.rootAppointmentId,
+          endDate: null,
+          status: RECURRENCE_SERIES_STATUS_STOPPED,
+          stoppedAt: series.stoppedAt || now,
           updatedAt: now,
         },
       });
@@ -503,15 +660,14 @@ const promoteRecurringSeriesHead = async (seriesId?: string | null) => {
     }
 
     const head = activeRows[0].appointment;
+    const seriesEndDate = getRecurringSeriesEndDate(activeRows);
     await recurringSeries.update({
       where: { id },
       data: {
         rootAppointmentId: head.id,
-        status:
-          activeRows.length > 1
-            ? RECURRENCE_SERIES_STATUS_ACTIVE
-            : RECURRENCE_SERIES_STATUS_STOPPED,
-        stoppedAt: activeRows.length > 1 ? null : now,
+        endDate: seriesEndDate,
+        status: RECURRENCE_SERIES_STATUS_ACTIVE,
+        stoppedAt: null,
         updatedAt: now,
       },
     });
@@ -592,15 +748,19 @@ const syncRecurringOccurrenceRecord = async ({
 
   const recurringOccurrence = (prisma as any).recurringOccurrence;
   const now = new Date();
-  const parentAppointmentId = normalizeId(
-    recurrence.generatedFromId || recurrence.sourceAppointmentId
-  );
+  const occurrenceStatus = isRecurringSeriesMemberAppointment(appointment)
+    ? status
+    : RECURRENCE_OCCURRENCE_STATUS_CANCELLED;
+  // parentAppointmentId should ONLY be set if this appointment was GENERATED FROM another one.
+  // sourceAppointmentId is just metadata about the series source, not the direct parent.
+  const parentAppointmentId = normalizeId(recurrence.generatedFromId);
 
   try {
     const existingOccurrence = await recurringOccurrence.findFirst({
       where: { appointmentId: appointment.id },
     });
     let sequence = Number(existingOccurrence?.sequence ?? 0);
+    let finalStatus = occurrenceStatus;
 
     if (!existingOccurrence && parentAppointmentId) {
       const parentOccurrence = await recurringOccurrence.findFirst({
@@ -615,27 +775,82 @@ const syncRecurringOccurrenceRecord = async ({
       sequence = latestOccurrence ? Number(latestOccurrence.sequence || 0) + 1 : 0;
     }
 
-    await recurringOccurrence.upsert({
-      where: { appointmentId: appointment.id },
-      update: {
-        seriesId,
-        parentAppointmentId,
-        generatedForDate: appointment.date,
-        status,
-        updatedAt: now,
-      },
-      create: {
-        id: makeRecurringOccurrenceId(),
-        seriesId,
-        appointmentId: appointment.id,
-        parentAppointmentId,
-        sequence,
-        generatedForDate: appointment.date,
-        status,
-        createdAt: now,
-        updatedAt: now,
-      },
-    });
+    // Try the upsert; if it fails due to unique constraint on parentAppointmentId + status,
+    // fall back to cancelled status (only one active child per parent is allowed).
+    try {
+      await recurringOccurrence.upsert({
+        where: { appointmentId: appointment.id },
+        update: {
+          seriesId,
+          parentAppointmentId,
+          generatedForDate: appointment.date,
+          status: finalStatus,
+          updatedAt: now,
+        },
+        create: {
+          id: makeRecurringOccurrenceId(),
+          seriesId,
+          appointmentId: appointment.id,
+          parentAppointmentId,
+          sequence,
+          generatedForDate: appointment.date,
+          status: finalStatus,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+    } catch (upsertErr: any) {
+      // If the upsert failed due to unique constraint on parentAppointmentId (active status),
+      // it means there's already an active child for this parent. Cancel this one instead.
+      if (
+        parentAppointmentId &&
+        finalStatus === RECURRENCE_OCCURRENCE_STATUS_ACTIVE &&
+        (upsertErr?.code === "P2002" || upsertErr?.message?.includes("parentAppointmentId"))
+      ) {
+        console.info("[Recurring Sync] Active child already exists for parent; cancelling this occurrence", {
+          appointmentId: appointment.id,
+          parentAppointmentId,
+          seriesId,
+        });
+        await recurringOccurrence.upsert({
+          where: { appointmentId: appointment.id },
+          update: {
+            seriesId,
+            parentAppointmentId,
+            generatedForDate: appointment.date,
+            status: RECURRENCE_OCCURRENCE_STATUS_CANCELLED,
+            updatedAt: now,
+          },
+          create: {
+            id: makeRecurringOccurrenceId(),
+            seriesId,
+            appointmentId: appointment.id,
+            parentAppointmentId,
+            sequence,
+            generatedForDate: appointment.date,
+            status: RECURRENCE_OCCURRENCE_STATUS_CANCELLED,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+      } else {
+        throw upsertErr;
+      }
+    }
+
+    // Defensive repair: if multiple occurrences were created with sequence=0 (heads),
+    // recalculate and promote a single canonical head. This can happen under
+    // concurrent upserts where two rows are created before either can see the other.
+    try {
+      const headCount = await recurringOccurrence.count({
+        where: { seriesId, sequence: 0, status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE },
+      });
+      if (headCount > 1) {
+        await promoteRecurringSeriesHead(seriesId);
+      }
+    } catch (err) {
+      warnRecurringTableSync("Could not repair duplicate recurring series head", err);
+    }
   } catch (error) {
     warnRecurringTableSync("Could not sync recurring occurrence table", error);
   }
@@ -742,7 +957,7 @@ export const cancelRecurringSeriesAppointments = async ({
   changedBy,
   changedByName,
   includeCurrentAppointment = true,
-  deleteRelatedAppointments = true,
+  deleteRelatedAppointments = false,
 }: CancelRecurringSeriesAppointmentsArgs): Promise<Appointment> => {
   if (!appointment.id) return appointment;
 
@@ -781,9 +996,10 @@ export const cancelRecurringSeriesAppointments = async ({
     const isCurrentAppointment = appointmentToCancel.id === appointment.id;
     const previousState = { ...appointmentToCancel };
     const existingRecurrence = normalizeAppointmentRecurrence((appointmentToCancel as any).recurrence);
-    const shouldMarkDeleted =
+    const shouldMarkDeleted = Boolean(
       appointmentToCancel.deleted ||
-      (!isCurrentAppointment && deleteRelatedAppointments);
+      (!isCurrentAppointment && deleteRelatedAppointments)
+    );
     const nextState: Appointment = {
       ...appointmentToCancel,
       status: "cancelled",
@@ -827,7 +1043,7 @@ export const cancelRecurringSeriesAppointments = async ({
         changedByName || "System",
         "status_change",
         0,
-        `Recurring appointment removed because ${formatRecurringLogDate(appointment.date)} was cancelled.`
+        `Recurring appointment cancelled because ${formatRecurringLogDate(appointment.date)} was cancelled.`
       );
     }
   }
@@ -999,25 +1215,47 @@ const getRecurrenceTargetDate = (appointmentDate: string, recurrence: Appointmen
   if (recurrence.option === "Custom") {
     const customDate = parseDateOnly(recurrence.customDate);
     if (!customDate || !sourceDate) return null;
+    const rootDate = parseDateOnly(
+      recurrence.sourceAppointmentDate ||
+      recurrence.generatedFromDate ||
+      appointmentDate
+    ) || sourceDate;
+    const isRootStep = formatDateOnly(rootDate) === formatDateOnly(sourceDate);
 
-    const today = parseDateOnly(formatDateOnly(new Date())) || new Date();
-    const dayAfterSource = new Date(
-      sourceDate.getFullYear(),
-      sourceDate.getMonth(),
-      sourceDate.getDate() + 1
-    );
-    const minimumDate = dayAfterSource.getTime() > today.getTime() ? dayAfterSource : today;
+    if (isRootStep) {
+      const today = parseDateOnly(formatDateOnly(new Date())) || new Date();
+      const dayAfterSource = new Date(
+        sourceDate.getFullYear(),
+        sourceDate.getMonth(),
+        sourceDate.getDate() + 1
+      );
+      const minimumDate = dayAfterSource.getTime() > today.getTime() ? dayAfterSource : today;
 
-    return customDate.getTime() >= minimumDate.getTime() ? customDate : null;
+      return customDate.getTime() >= minimumDate.getTime() ? customDate : null;
+    }
+
+    const intervalDays = Math.max(1, dateDiffInDays(rootDate, customDate));
+    const targetDate = new Date(sourceDate);
+    targetDate.setDate(sourceDate.getDate() + intervalDays);
+    return targetDate;
   }
 
   if (!sourceDate) return null;
 
-  const monthsByOption: Record<RecurringAppointmentOption, number> = {
+  if (recurrence.option === "Weekly") {
+    const targetDate = new Date(sourceDate);
+    targetDate.setDate(sourceDate.getDate() + 7);
+    return targetDate;
+  }
+
+  const monthsByOption: Partial<Record<RecurringAppointmentOption, number>> = {
+    Monthly: 1,
+    "Every 2 months": 2,
+    "Every 3 months": 3,
+    "Every 6 months": 6,
     "1 month": 1,
     "3 months": 3,
     "6 months": 6,
-    Custom: 1,
   };
 
   return addMonthsClamped(sourceDate, monthsByOption[recurrence.option] || 1);
@@ -1159,6 +1397,982 @@ const buildGeneratedAppointmentData = ({
   };
 };
 
+const createAppointmentLogInTransaction = async ({
+  tx,
+  appointmentId,
+  previousState,
+  newState,
+  changedBy,
+  changedByName,
+  changeType = "update",
+  amount = 0,
+  notes,
+}: {
+  tx: any;
+  appointmentId: string;
+  previousState: Appointment;
+  newState: Partial<Appointment>;
+  changedBy: string;
+  changedByName?: string;
+  changeType?: string;
+  amount?: number;
+  notes?: string;
+}) => {
+  await tx.appointmentLog.create({
+    data: {
+      id: makeAppointmentLogId(),
+      appointmentId,
+      previousState: previousState as any,
+      newState: newState as any,
+      changedBy,
+      changedByName: changedByName || "System",
+      changedAt: new Date(),
+      changeType,
+      amount,
+      notes,
+    },
+  });
+};
+
+const getSortedActiveOccurrenceRows = (
+  occurrences: any[],
+  appointmentsById: Map<string, Appointment>
+) =>
+  sortAppointmentsBySchedule(
+    occurrences
+      .filter((occurrence) => occurrence?.status !== RECURRENCE_OCCURRENCE_STATUS_CANCELLED)
+      .map((occurrence) => ({
+        occurrence,
+        appointment: appointmentsById.get(String(occurrence.appointmentId || "")),
+      }))
+      .filter(
+        (row: { occurrence: any; appointment?: Appointment }): row is { occurrence: any; appointment: Appointment } =>
+          isRecurringSeriesMemberAppointment(row.appointment)
+      )
+  );
+
+/**
+ * CLEAN RECURRING SERIES SPLIT LOGIC
+ * ====================================
+ * When a user edits a middle/tail appointment in a recurring series to change "This and all future sessions",
+ * this function executes a 5-step procedure to preserve historical data and split the series cleanly:
+ *
+ * STEP 1: Truncate the old series (set endDate to day before edited appointment)
+ * STEP 2: Soft-cancel all future appointments in the old series (status = 'cancelled', not hard-deleted)
+ * STEP 3: Create a brand-new recurring series with the new recurrence settings
+ * STEP 4: Migrate the edited appointment to the new series (preserving payments and all other data)
+ * STEP 5: Spawn 4 new future appointments for the new series
+ *
+ * All operations use database transactions to ensure atomic updates with full rollback on failure.
+ */
+const maybeSplitRecurringSeriesAtAppointment = async ({
+  appointment,
+  allAppointments,
+  requestedRecurrence,
+  recurrenceInputProvided,
+  changedBy,
+  changedByName,
+  doctorStaff,
+}: {
+  appointment: Appointment;
+  allAppointments: Appointment[];
+  requestedRecurrence: AppointmentRecurrencePayload;
+  recurrenceInputProvided: boolean;
+  changedBy: string;
+  changedByName?: string;
+  doctorStaff: DoctorIdentity[];
+}): Promise<Appointment | null> => {
+  const appointmentId = normalizeId(appointment.id);
+  const splitStartDate = normalizeDateOnly(appointment.date);
+
+  if (!appointmentId || !splitStartDate || !requestedRecurrence.enabled) {
+    return null;
+  }
+
+  if (!recurrenceInputProvided) return null;
+
+  const recurringOccurrence = (prisma as any).recurringOccurrence;
+  const recurringSeries = (prisma as any).recurringSeries;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // PREREQUISITE CHECK: Verify the appointment belongs to an existing recurring series
+  // ═══════════════════════════════════════════════════════════════════════════════
+  const currentOccurrence = await recurringOccurrence.findFirst({
+    where: {
+      appointmentId,
+      status: { not: RECURRENCE_OCCURRENCE_STATUS_CANCELLED },
+    },
+  });
+  if (!currentOccurrence?.seriesId) return null;
+
+  const oldSeries = await recurringSeries.findUnique({
+    where: { id: currentOccurrence.seriesId },
+  });
+  if (!oldSeries) return null;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GUARD: If recurrence is being disabled (DO NOT REPEAT selected), do NOT split the series.
+  // This prevents accidental cancellation when user just wants to edit the current appointment.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  if (!requestedRecurrence.enabled) {
+    return null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // PREREQUISITE CHECK: Verify there are past appointments (cannot split at series start)
+  // ═══════════════════════════════════════════════════════════════════════════════
+  const oldOccurrences = await recurringOccurrence.findMany({
+    where: {
+      seriesId: oldSeries.id,
+    },
+  });
+  const hasOlderOccurrence = oldOccurrences.some((occurrence: any) => {
+    if (String(occurrence.appointmentId || "") === appointmentId) return false;
+    const occurrenceDate = normalizeDateOnly(occurrence.generatedForDate);
+    return Boolean(occurrenceDate && occurrenceDate < splitStartDate);
+  });
+  if (!hasOlderOccurrence) return null;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // EXECUTION: Begin the 5-step split procedure within a database transaction
+  // ═══════════════════════════════════════════════════════════════════════════════
+  console.log(`[SPLIT] ====== STARTING RECURRING SERIES SPLIT ======`);
+  console.log(`[SPLIT] Appointment ID: ${appointmentId}`);
+  console.log(`[SPLIT] Split Start Date: ${splitStartDate}`);
+  console.log(`[SPLIT] Old Series ID: ${currentOccurrence?.seriesId}`);
+  console.log(`[SPLIT] New Series ID: ${makeRecurringSeriesId(appointmentId, splitStartDate)}`);
+  console.log(`[SPLIT] Requested Recurrence: ${JSON.stringify(requestedRecurrence)}`);
+  
+  const now = new Date();
+  const oldSeriesEndDateOneDayBefore = addDaysToDateOnly(splitStartDate, -1);
+  const newSeriesId = makeRecurringSeriesId(appointmentId, splitStartDate);
+
+  const splitResult = await prisma.$transaction(async (tx) => {
+    const txAppointment = (tx as any).appointment;
+    const txRecurringSeries = (tx as any).recurringSeries;
+    const txRecurringOccurrence = (tx as any).recurringOccurrence;
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // STEP 1: TRUNCATE THE OLD MASTER RULE
+    // Update the old series to end one day before the edited appointment.
+    // This safely locks in all historical past appointments.
+    // ─────────────────────────────────────────────────────────────────────────────
+    await txRecurringSeries.update({
+      where: { id: oldSeries.id },
+      data: {
+        endDate: oldSeriesEndDateOneDayBefore,
+        status: RECURRENCE_SERIES_STATUS_ACTIVE,
+        stoppedAt: null,
+        updatedAt: now,
+      },
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // STEP 2: SOFT-DELETE / CANCEL OLD FUTURE APPOINTMENTS **FIRST** (BEFORE CREATING NEW)
+    // Find all appointments in the old series that occur AFTER the edited date.
+    // Update their status to 'cancelled' and disconnect from the old series.
+    // CRITICAL: Do this BEFORE spawning new appointments to avoid conflicts.
+    // ─────────────────────────────────────────────────────────────────────────────
+    console.log(`[SPLIT] STEP 2 START: Looking for old future appointments after ${splitStartDate}`);
+    const futureOldOccurrences = oldOccurrences.filter((occurrence: any) => {
+      if (String(occurrence.appointmentId || "") === appointmentId) {
+        console.log(`[SPLIT] STEP 2: Skipping head appointment ${appointmentId}`);
+        return false;
+      }
+      const occurrenceDate = normalizeDateOnly(occurrence.generatedForDate);
+      return Boolean(occurrenceDate && occurrenceDate > splitStartDate);
+    });
+
+    console.log(`[SPLIT] STEP 2: Found ${futureOldOccurrences.length} old future appointments to cancel`);
+
+    for (const futureOccurrence of futureOldOccurrences) {
+      const futureAppointmentId = String(futureOccurrence.appointmentId || "");
+      if (!futureAppointmentId) continue;
+
+      console.log(`[SPLIT] STEP 2: Cancelling future appointment ${futureAppointmentId}`);
+
+      const futureAppointment = toAppointment(
+        await txAppointment.findUnique({ where: { id: futureAppointmentId } })
+      );
+      if (!futureAppointment) continue;
+
+      const previousState = { ...futureAppointment };
+
+      // Cancel the appointment (do not hard-delete; preserve for audit trail)
+      await txAppointment.update({
+        where: { id: futureAppointmentId },
+        data: {
+          status: "cancelled",
+          isRecurring: false,
+          recurringSeriesId: oldSeries.id,
+          updatedAt: now,
+          recurrence: {
+            ...(normalizeAppointmentRecurrence((futureAppointment as any).recurrence) || {}),
+            enabled: false,
+            generatedAppointmentId: null,
+            generatedAppointmentDate: null,
+            cancelledAt: now.toISOString(),
+          } as any,
+        } as any,
+      });
+
+      // Log the cancellation
+      const cancelledAppointment = toAppointment(
+        await txAppointment.findUnique({ where: { id: futureAppointmentId } })
+      );
+
+      await createAppointmentLogInTransaction({
+        tx,
+        appointmentId: futureAppointmentId,
+        previousState,
+        newState: cancelledAppointment!,
+        changedBy,
+        changedByName,
+        changeType: "status_change",
+        notes: `Cancelled from the recurring series. A new recurring schedule begins on ${formatRecurringLogDate(splitStartDate)}.`,
+      });
+
+      // Mark the occurrence as cancelled
+      await txRecurringOccurrence.update({
+        where: { appointmentId: futureAppointmentId },
+        data: {
+          status: RECURRENCE_OCCURRENCE_STATUS_CANCELLED,
+          updatedAt: now,
+        },
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // STEP 3: CREATE THE NEW MASTER RULE
+    // Insert a brand-new recurring series with the new recurrence settings.
+    // ─────────────────────────────────────────────────────────────────────────────
+    const newSeriesRecurrence: AppointmentRecurrencePayload = {
+      enabled: true,
+      option: normalizeRecurrenceOption(requestedRecurrence.option),
+      customDate:
+        requestedRecurrence.option === "Custom"
+          ? normalizeDateOnly(requestedRecurrence.customDate) || null
+          : null,
+      repeatCount: normalizeRepeatCount(requestedRecurrence.repeatCount),
+      recurringSeriesId: newSeriesId,
+      sourceAppointmentId: appointmentId,
+      sourceAppointmentDate: splitStartDate,
+    };
+
+    await txRecurringSeries.create({
+      data: {
+        id: newSeriesId,
+        rootAppointmentId: appointmentId,
+        interval: newSeriesRecurrence.option,
+        customDate: newSeriesRecurrence.customDate || null,
+        startDate: splitStartDate,
+        endDate: splitStartDate,
+        status: RECURRENCE_SERIES_STATUS_ACTIVE,
+        createdAt: now,
+        updatedAt: now,
+        stoppedAt: null,
+      },
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // STEP 4: MIGRATE THE EDITED APPOINTMENT
+    // Disconnect from the old series and connect to the new series.
+    // PRESERVE all payments and notes.
+    // ─────────────────────────────────────────────────────────────────────────────
+    console.log(`[SPLIT] STEP 4 START: Migrating head appointment ${appointmentId} to new series ${newSeriesId}`);
+    const headAppointment = toAppointment(
+      await txAppointment.findUnique({ where: { id: appointmentId } })
+    );
+    console.log(`[SPLIT] STEP 4: Found head appointment:`, {
+      id: headAppointment?.id,
+      status: headAppointment?.status,
+      paymentStatus: headAppointment?.paymentStatus,
+      isRecurring: headAppointment?.isRecurring,
+      recurringSeriesId: headAppointment?.recurringSeriesId,
+    });
+
+    if (!headAppointment || isInactiveAppointment(headAppointment)) {
+      throw new Error("Cannot migrate an inactive appointment to the new series.");
+    }
+
+    const headRecurrenceToSave: AppointmentRecurrencePayload = {
+      ...normalizeAppointmentRecurrence((headAppointment as any).recurrence),
+      ...newSeriesRecurrence,
+      enabled: true,
+    };
+
+    console.log(`[SPLIT] STEP 4: About to update head with:`, {
+      status: headAppointment.status,
+      paymentStatus: headAppointment.paymentStatus,
+      recurringSeriesId: newSeriesId,
+      isRecurring: true,
+    });
+
+    const updatedHead = toAppointment(
+      await txAppointment.update({
+        where: { id: appointmentId },
+        data: {
+          status: headAppointment.status,
+          paymentStatus: headAppointment.paymentStatus,
+          recurringSeriesId: newSeriesId,
+          isRecurring: true,
+          recurrence: headRecurrenceToSave as any,
+          updatedAt: now,
+        } as any,
+      })
+    );
+
+    console.log(`[SPLIT] STEP 4: Head appointment after update:`, {
+      id: updatedHead?.id,
+      status: updatedHead?.status,
+      paymentStatus: updatedHead?.paymentStatus,
+      isRecurring: updatedHead?.isRecurring,
+      recurringSeriesId: updatedHead?.recurringSeriesId,
+    });
+
+    // Upsert the occurrence link to the new series
+    console.log(`[SPLIT] STEP 4: Creating occurrence record for head (sequence=0)`);
+    await txRecurringOccurrence.upsert({
+      where: { appointmentId },
+      update: {
+        seriesId: newSeriesId,
+        parentAppointmentId: null,
+        sequence: 0,
+        generatedForDate: splitStartDate,
+        status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE,
+        updatedAt: now,
+      },
+      create: {
+        id: makeRecurringOccurrenceId(),
+        seriesId: newSeriesId,
+        appointmentId,
+        parentAppointmentId: null,
+        sequence: 0,
+        generatedForDate: splitStartDate,
+        status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+
+    console.log(`[SPLIT] STEP 4: Occurrence upsert complete. Fetching updated head from DB...`);
+    
+    // Verify the head status didn't change
+    const headAfterOccurrence = toAppointment(
+      await txAppointment.findUnique({ where: { id: appointmentId } })
+    );
+    console.log(`[SPLIT] STEP 4: Head after occurrence upsert:`, {
+      id: headAfterOccurrence?.id,
+      status: headAfterOccurrence?.status,
+      paymentStatus: headAfterOccurrence?.paymentStatus,
+    });
+
+    console.log(`[SPLIT] STEP 4: Creating appointment log...`);
+    await createAppointmentLogInTransaction({
+      tx,
+      appointmentId,
+      previousState: headAppointment,
+      newState: updatedHead,
+      changedBy,
+      changedByName,
+      changeType: "recurrence_change",
+      notes: `Migrated to a new recurring series with ${newSeriesRecurrence.option} recurrence starting ${formatRecurringLogDate(splitStartDate)}.`,
+    });
+
+    console.log(`[SPLIT] STEP 4 COMPLETE: Head appointment migrated successfully`);
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // STEP 5: SPAWN BRAND NEW APPOINTMENTS FOR THE NEW TIMELINE
+    // Generate the next 4 unique appointment instances linked to the new series.
+    // IMPORTANT: Calculate dates relative to series start + offset, NOT relative to
+    // previously created appointments. This ensures Jan 16 is attempted (not blocked
+    // by old series anymore), and if blocked, Jan 17 is used. Then next attempt is
+    // Jan 23 (series start + 2*7), NOT Jan 24 (prev created date + 7).
+    // ─────────────────────────────────────────────────────────────────────────────
+    const newSeriesAppointments: Appointment[] = [updatedHead];
+    const appointmentsForConflict = [...allAppointments];
+    const seenDates = new Set<string>([splitStartDate]);
+    const spawnCount = 4; // Pre-generate 4 future instances
+    let logicalBaseDate = splitStartDate; // Track logical cadence separately from created dates
+    let currentParent = updatedHead;
+
+    for (let i = 0; i < spawnCount; i += 1) {
+      // Calculate the next target date based on recurrence rule.
+      // CRITICAL: Use the accumulated LOGICAL target, not the previously CREATED date.
+      // This preserves the recurrence cadence even if a date must be skipped due to conflicts.
+      // Example: Jan 9 (logical) + 7d = Jan 16 (logical, but blocked) → skip to Jan 17 (created)
+      //          Jan 16 (logical) + 7d = Jan 23 (logical) → attempt Jan 23, not Jan 24
+      const logicalTargetDate = getRecurrenceTargetDate(logicalBaseDate, newSeriesRecurrence);
+      
+      if (!logicalTargetDate) {
+        throw new Error(`Cannot calculate next recurrence date for ${newSeriesRecurrence.option}`);
+      }
+      
+      // Update logical base for next iteration (before we potentially skip due to conflicts)
+      logicalBaseDate = formatDateOnly(logicalTargetDate);
+
+      // Find an available date (avoiding conflicts with existing appointments)
+      // Note: Old future appointments are now cancelled, so they won't block
+      const generatedDate = findRecurringAppointmentDate({
+        appointment: currentParent,
+        allAppointments: appointmentsForConflict,
+        targetDate: logicalTargetDate,
+        doctorStaff,
+      });
+
+      if (!generatedDate) {
+        throw new Error(`No available date found for new recurring series at step ${i + 1}`);
+      }
+
+      if (seenDates.has(generatedDate)) {
+        throw new Error(`Duplicate appointment date generated: ${generatedDate}`);
+      }
+      seenDates.add(generatedDate);
+
+      // Create the new appointment with the same core details as the current parent
+      const generatedData = buildGeneratedAppointmentData({
+        source: currentParent,
+        generatedDate,
+        recurrence: newSeriesRecurrence,
+      });
+
+      const newAppointment = toAppointment(
+        await txAppointment.create({ data: generatedData as any })
+      );
+
+      // Link it to the new series
+      await txRecurringOccurrence.create({
+        data: {
+          id: makeRecurringOccurrenceId(),
+          seriesId: newSeriesId,
+          appointmentId: newAppointment.id || "",
+          parentAppointmentId: currentParent.id || null,
+          sequence: i + 1,
+          generatedForDate: generatedDate,
+          status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      // Update the appointment's recurrence metadata
+      const recurrenceData: AppointmentRecurrencePayload = {
+        ...newSeriesRecurrence,
+        enabled: true,
+        generatedFromId: currentParent.id || null,
+        generatedFromDate: currentParent.date || null,
+        sourceAppointmentId: appointmentId,
+        sourceAppointmentDate: splitStartDate,
+      };
+
+      await txAppointment.update({
+        where: { id: newAppointment.id || "" },
+        data: {
+          recurringSeriesId: newSeriesId,
+          isRecurring: true,
+          recurrence: recurrenceData as any,
+          updatedAt: now,
+        } as any,
+      });
+
+      // Update the parent pointer to continue the chain
+      currentParent = newAppointment;
+
+      // Log the creation
+      await createAppointmentLogInTransaction({
+        tx,
+        appointmentId: newAppointment.id || "",
+        previousState: {
+          status: "none",
+          paymentStatus: "none",
+          price: 0,
+          balance: 0,
+          totalPaid: 0,
+        } as any,
+        newState: newAppointment,
+        changedBy,
+        changedByName,
+        notes: `Pre-generated for the new recurring series starting ${formatRecurringLogDate(splitStartDate)}.`,
+      });
+
+      newSeriesAppointments.push(newAppointment);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Update the new series endDate to reflect all spawned appointments
+    // ─────────────────────────────────────────────────────────────────────────────
+    const newSeriesEndDate = getRecurringSeriesEndDate(
+      newSeriesAppointments.map((apt) => ({ appointment: apt }))
+    );
+
+    await txRecurringSeries.update({
+      where: { id: newSeriesId },
+      data: {
+        endDate: newSeriesEndDate || splitStartDate,
+        status: RECURRENCE_SERIES_STATUS_ACTIVE,
+        stoppedAt: null,
+        updatedAt: now,
+      },
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Log the split event at the series level
+    // ─────────────────────────────────────────────────────────────────────────────
+    console.log(`[SPLIT] Final status check before series-level log...`);
+    const headBeforeSeriesLog = toAppointment(
+      await txAppointment.findUnique({ where: { id: appointmentId } })
+    );
+    console.log(`[SPLIT] Head before series log:`, {
+      id: headBeforeSeriesLog?.id,
+      status: headBeforeSeriesLog?.status,
+    });
+
+    await createAppointmentLogInTransaction({
+      tx,
+      appointmentId,
+      previousState: headAppointment,
+      newState: updatedHead,
+      changedBy,
+      changedByName,
+      notes: `Recurring series split: Old ${oldSeries.interval} series ended on ${formatRecurringLogDate(
+        oldSeriesEndDateOneDayBefore
+      )}. New ${newSeriesRecurrence.option} series starts on ${formatRecurringLogDate(splitStartDate)} with ${spawnCount} pre-generated future appointments.`,
+    });
+
+    console.log(`[SPLIT] Series log created. Fetching final head status...`);
+    const headFinal = toAppointment(
+      await txAppointment.findUnique({ where: { id: appointmentId } })
+    );
+    console.log(`[SPLIT] Head final status before return:`, {
+      id: headFinal?.id,
+      status: headFinal?.status,
+      paymentStatus: headFinal?.paymentStatus,
+    });
+
+    return headFinal;
+  });
+
+  console.log(`[SPLIT] Transaction complete. Split result:`, {
+    id: splitResult?.id,
+    status: splitResult?.status,
+  });
+  console.log(`[SPLIT] ====== SPLIT COMPLETE ======`);
+  return splitResult ? toAppointment(splitResult) : null;
+};
+
+const maybeOverwriteRecurringSeriesHead = async ({
+  appointment,
+  allAppointments,
+  requestedRecurrence,
+  recurrenceInputProvided,
+  changedBy,
+  changedByName,
+  doctorStaff,
+}: {
+  appointment: Appointment;
+  allAppointments: Appointment[];
+  requestedRecurrence: AppointmentRecurrencePayload;
+  recurrenceInputProvided: boolean;
+  changedBy: string;
+  changedByName?: string;
+  doctorStaff: DoctorIdentity[];
+}): Promise<Appointment | null> => {
+  const appointmentId = normalizeId(appointment.id);
+  const headDate = normalizeDateOnly(appointment.date);
+
+  if (!appointmentId || !headDate || !requestedRecurrence.enabled || !recurrenceInputProvided) {
+    return null;
+  }
+
+  const recurringOccurrence = (prisma as any).recurringOccurrence;
+  const recurringSeries = (prisma as any).recurringSeries;
+  const currentOccurrence = await recurringOccurrence.findFirst({
+    where: {
+      appointmentId,
+      status: { not: RECURRENCE_OCCURRENCE_STATUS_CANCELLED },
+    },
+  });
+  if (!currentOccurrence?.seriesId) return null;
+
+  const series = await recurringSeries.findUnique({
+    where: { id: currentOccurrence.seriesId },
+  });
+  if (!series) return null;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GUARD: If recurrence is being disabled (DO NOT REPEAT selected), do NOT overwrite the series.
+  // This prevents accidental cancellation when user just wants to edit the current appointment.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  if (!requestedRecurrence.enabled) {
+    return null;
+  }
+
+  const olderOccurrence = await recurringOccurrence.findFirst({
+    where: {
+      seriesId: series.id,
+      appointmentId: { not: appointmentId },
+      generatedForDate: { lt: headDate },
+      status: { not: RECURRENCE_OCCURRENCE_STATUS_CANCELLED },
+    },
+  });
+  if (olderOccurrence) return null;
+
+  const seriesRootId = normalizeId(series.rootAppointmentId);
+  const parentAppointmentId = normalizeId(currentOccurrence.parentAppointmentId);
+  const isSeriesHead =
+    Number(currentOccurrence.sequence || 0) === 0 ||
+    !parentAppointmentId ||
+    seriesRootId === appointmentId;
+  if (!isSeriesHead) return null;
+
+  const desiredRepeatCount = normalizeRepeatCount(requestedRecurrence.repeatCount);
+  const now = new Date();
+
+  const overwriteResult = await prisma.$transaction(async (tx) => {
+    const txAppointment = (tx as any).appointment;
+    const txRecurringSeries = (tx as any).recurringSeries;
+    const txRecurringOccurrence = (tx as any).recurringOccurrence;
+
+    const freshAppointment = toAppointment(
+      await txAppointment.findUnique({ where: { id: appointmentId } })
+    );
+    if (!freshAppointment || isInactiveAppointment(freshAppointment)) {
+      throw new Error("Cannot overwrite an inactive repeating appointment head.");
+    }
+
+    const freshCurrentOccurrence = await txRecurringOccurrence.findFirst({
+      where: {
+        appointmentId,
+        status: { not: RECURRENCE_OCCURRENCE_STATUS_CANCELLED },
+      },
+    });
+    if (!freshCurrentOccurrence?.seriesId) {
+      throw new Error("Cannot overwrite repeating appointment without an occurrence row.");
+    }
+
+    const freshSeries = await txRecurringSeries.findUnique({
+      where: { id: freshCurrentOccurrence.seriesId },
+    });
+    if (!freshSeries) return null;
+
+    const freshHeadDate = normalizeDateOnly(freshAppointment.date);
+    const freshOlderOccurrence = await txRecurringOccurrence.findFirst({
+      where: {
+        seriesId: freshSeries.id,
+        appointmentId: { not: appointmentId },
+        generatedForDate: { lt: freshHeadDate },
+        status: { not: RECURRENCE_OCCURRENCE_STATUS_CANCELLED },
+      },
+    });
+    if (freshOlderOccurrence) return null;
+
+    const recurrenceForGeneration: AppointmentRecurrencePayload = {
+      ...requestedRecurrence,
+      enabled: true,
+      option: normalizeRecurrenceOption(requestedRecurrence.option),
+      customDate: requestedRecurrence.option === "Custom"
+        ? normalizeDateOnly(requestedRecurrence.customDate) || null
+        : null,
+      repeatCount: desiredRepeatCount,
+      recurringSeriesId: freshSeries.id,
+      sourceAppointmentId: appointmentId,
+      sourceAppointmentDate: freshAppointment.date,
+    };
+
+    await txRecurringSeries.update({
+      where: { id: freshSeries.id },
+      data: {
+        rootAppointmentId: appointmentId,
+        interval: recurrenceForGeneration.option,
+        customDate: recurrenceForGeneration.customDate || null,
+        startDate: freshAppointment.date || null,
+        endDate: freshAppointment.date || null,
+        status: RECURRENCE_SERIES_STATUS_ACTIVE,
+        stoppedAt: null,
+        updatedAt: now,
+      },
+    });
+
+    const seriesOccurrences = await txRecurringOccurrence.findMany({
+      where: {
+        seriesId: freshSeries.id,
+        status: { not: RECURRENCE_OCCURRENCE_STATUS_CANCELLED },
+      },
+      orderBy: [
+        { sequence: "asc" },
+        { generatedForDate: "asc" },
+        { createdAt: "asc" },
+      ],
+    });
+    const seriesAppointmentIds = Array.from(new Set<string>(
+      seriesOccurrences
+        .map((occurrence: any) => String(occurrence.appointmentId || ""))
+        .filter(Boolean)
+    ));
+    const seriesAppointments: Appointment[] = ((await txAppointment.findMany({
+      where: { id: { in: seriesAppointmentIds } },
+    })) as unknown[]).map(toAppointment);
+    const appointmentsById = new Map<string, Appointment>(
+      seriesAppointments
+        .filter((seriesAppointment: Appointment) => seriesAppointment.id)
+        .map((seriesAppointment: Appointment) => [String(seriesAppointment.id), seriesAppointment])
+    );
+    const activeRows = getSortedActiveOccurrenceRows(seriesOccurrences, appointmentsById);
+    const reusableRows = activeRows.filter((row) => row.appointment.id !== appointmentId);
+    const reusableAppointmentIds = reusableRows
+      .map((row) => String(row.appointment.id || ""))
+      .filter(Boolean);
+    const generatedAppointments: Appointment[] = [];
+    let appointmentsForConflict = allAppointments.filter((candidate) => {
+      const candidateId = String(candidate.id || "");
+      return candidateId !== appointmentId && !reusableAppointmentIds.includes(candidateId);
+    });
+    let parentAppointment = freshAppointment;
+    const seenInstanceDates = new Set<string>([freshAppointment.date]);
+
+    for (let index = 0; index < desiredRepeatCount; index += 1) {
+      const targetDate = getRecurrenceTargetDate(parentAppointment.date, {
+        ...recurrenceForGeneration,
+        generatedFromId: parentAppointment.id || null,
+        generatedFromDate: parentAppointment.date || null,
+        sourceAppointmentId: appointmentId,
+        sourceAppointmentDate: freshAppointment.date,
+      });
+      if (!targetDate) {
+        throw new Error("Cannot generate the next repeating appointment date.");
+      }
+
+      const reusableAppointment = reusableRows[index]?.appointment || null;
+      const reusableAppointmentId = reusableAppointment?.id || null;
+      const generatedDate = findRecurringAppointmentDate({
+        appointment: parentAppointment,
+        allAppointments: appointmentsForConflict,
+        targetDate,
+        existingGeneratedAppointmentId: reusableAppointmentId,
+        doctorStaff,
+      });
+      if (!generatedDate) {
+        throw new Error("No available date was found for the overwritten repeating series.");
+      }
+      if (seenInstanceDates.has(generatedDate)) {
+        throw new Error("The overwritten repeating series generated a duplicate appointment date.");
+      }
+      seenInstanceDates.add(generatedDate);
+
+      const generatedData = buildGeneratedAppointmentData({
+        source: parentAppointment,
+        generatedDate,
+        recurrence: recurrenceForGeneration,
+        generatedAppointmentId: reusableAppointmentId || undefined,
+      });
+
+      let generatedAppointment: Appointment;
+      if (reusableAppointmentId && reusableAppointment) {
+        const previousState: Appointment = { ...reusableAppointment };
+        const generatedUpdateData = { ...generatedData } as any;
+        delete generatedUpdateData.id;
+        generatedAppointment = toAppointment(
+          await txAppointment.update({
+            where: { id: reusableAppointmentId },
+            data: {
+              ...generatedUpdateData,
+              createdAt: reusableAppointment.createdAt || generatedData.createdAt,
+              updatedAt: now,
+            } as any,
+          })
+        );
+
+        await createAppointmentLogInTransaction({
+          tx,
+          appointmentId: reusableAppointmentId,
+          previousState,
+          newState: generatedAppointment,
+          changedBy,
+          changedByName,
+          changeType:
+            previousState.date !== generatedAppointment.date || previousState.time !== generatedAppointment.time
+              ? "rescheduled"
+              : "update",
+          notes: "Updated from repeating head changes.",
+        });
+      } else {
+        generatedAppointment = toAppointment(
+          await txAppointment.create({ data: generatedData as any })
+        );
+
+        await createAppointmentLogInTransaction({
+          tx,
+          appointmentId: generatedAppointment.id!,
+          previousState: { status: "none", paymentStatus: "none", price: 0, balance: 0, totalPaid: 0 } as any,
+          newState: generatedAppointment,
+          changedBy,
+          changedByName,
+          notes: `Created from repeating schedule from ${formatRecurringLogDate(parentAppointment.date)}.`,
+        });
+      }
+
+      generatedAppointments.push(generatedAppointment);
+      appointmentsForConflict = [
+        ...appointmentsForConflict.filter(
+          (existingAppointment) => String(existingAppointment.id || "") !== String(generatedAppointment.id || "")
+        ),
+        generatedAppointment,
+      ];
+      parentAppointment = generatedAppointment;
+    }
+
+    const extraRows = reusableRows.slice(generatedAppointments.length);
+    for (const row of extraRows) {
+      const extraAppointment = row.appointment;
+      if (!extraAppointment.id) continue;
+
+      const previousState: Appointment = { ...extraAppointment };
+      const extraRecurrence = normalizeAppointmentRecurrence((extraAppointment as any).recurrence);
+      const nextState: Appointment = {
+        ...extraAppointment,
+        status: "cancelled",
+        deleted: Boolean(extraAppointment.deleted),
+        deletedAt: extraAppointment.deletedAt,
+        updatedAt: now,
+        isRecurring: false,
+        recurrence: {
+          ...(extraRecurrence || {}),
+          enabled: false,
+          generatedAppointmentId: null,
+          generatedAppointmentDate: null,
+          cancelledByHeadOverwriteId: appointmentId,
+          cancelledAt: now.toISOString(),
+        } as any,
+      };
+
+      await txAppointment.update({
+        where: { id: extraAppointment.id },
+        data: {
+          status: nextState.status,
+          deleted: nextState.deleted,
+          deletedAt: nextState.deletedAt,
+          updatedAt: now,
+          isRecurring: false,
+          recurrence: (nextState as any).recurrence,
+        } as any,
+      });
+
+      await txRecurringOccurrence.update({
+        where: { appointmentId: extraAppointment.id },
+        data: {
+          status: RECURRENCE_OCCURRENCE_STATUS_CANCELLED,
+          updatedAt: now,
+        },
+      });
+
+      await createAppointmentLogInTransaction({
+        tx,
+        appointmentId: extraAppointment.id,
+        previousState,
+        newState: nextState,
+        changedBy,
+        changedByName,
+        changeType: "status_change",
+        notes: `Cancelled because the repeating head was changed on ${formatRecurringLogDate(freshAppointment.date)}.`,
+      });
+    }
+
+    const sequenceAppointments = [freshAppointment, ...generatedAppointments];
+    let savedHead = freshAppointment;
+    for (let index = 0; index < sequenceAppointments.length; index += 1) {
+      const current = sequenceAppointments[index];
+      if (!current.id) continue;
+
+      const previous = index === 0 ? null : sequenceAppointments[index - 1];
+      const next = sequenceAppointments[index + 1] || null;
+      const existingRecurrence = normalizeAppointmentRecurrence((current as any).recurrence);
+      const recurrenceToSave: AppointmentRecurrencePayload = {
+        ...(existingRecurrence || {}),
+        ...recurrenceForGeneration,
+        enabled: Boolean(next),
+        repeatCount: normalizeRepeatCount(Math.max(1, sequenceAppointments.length - index - 1)),
+        generatedFromId: previous?.id || null,
+        generatedFromDate: previous?.date || null,
+        sourceAppointmentId: previous?.id || current.id || null,
+        sourceAppointmentDate: previous?.date || current.date || null,
+        ...getImmutableCreatedFromMetadata(existingRecurrence, current, previous || undefined),
+        generatedAppointmentId: next?.id || null,
+        generatedAppointmentDate: next?.date || null,
+        overwrittenFromHeadId: appointmentId,
+        overwrittenAt: now.toISOString(),
+        lastGeneratedAt: now.toISOString(),
+      };
+
+      const savedCurrent = toAppointment(
+        await txAppointment.update({
+          where: { id: current.id },
+          data: {
+            recurrence: recurrenceToSave as any,
+            isRecurring: Boolean(next),
+            recurringSeriesId: freshSeries.id,
+            updatedAt: now,
+          } as any,
+        })
+      );
+
+      await txRecurringOccurrence.upsert({
+        where: { appointmentId: current.id },
+        update: {
+          seriesId: freshSeries.id,
+          parentAppointmentId: previous?.id || null,
+          sequence: index,
+          generatedForDate: current.date,
+          status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE,
+          updatedAt: now,
+        },
+        create: {
+          id: makeRecurringOccurrenceId(),
+          seriesId: freshSeries.id,
+          appointmentId: current.id,
+          parentAppointmentId: previous?.id || null,
+          sequence: index,
+          generatedForDate: current.date,
+          status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      if (index === 0) savedHead = savedCurrent;
+    }
+
+    const sequenceEndDate = getRecurringSeriesEndDate(
+      sequenceAppointments.map((appointment) => ({ appointment }))
+    ) || freshAppointment.date || null;
+    await txRecurringSeries.update({
+      where: { id: freshSeries.id },
+      data: {
+        endDate: sequenceEndDate,
+        status:
+          sequenceAppointments.length > 1
+            ? RECURRENCE_SERIES_STATUS_ACTIVE
+            : RECURRENCE_SERIES_STATUS_STOPPED,
+        stoppedAt: sequenceAppointments.length > 1 ? null : now,
+        updatedAt: now,
+      },
+    });
+
+    await createAppointmentLogInTransaction({
+      tx,
+      appointmentId,
+      previousState: freshAppointment,
+      newState: savedHead,
+      changedBy,
+      changedByName,
+      notes: `Repeating head overwritten. New ${recurrenceForGeneration.option} rule starts on ${formatRecurringLogDate(freshAppointment.date)}.`,
+    });
+
+    return savedHead;
+  });
+
+  return overwriteResult ? toAppointment(overwriteResult) : null;
+};
+
 const writeAppointmentRecurrence = async (
   appointment: Appointment,
   recurrence: AppointmentRecurrencePayload
@@ -1225,8 +2439,8 @@ const cancelGeneratedRecurringAppointment = async ({
   const nextState: Appointment = {
     ...existing,
     status: "cancelled",
-    deleted: true,
-    deletedAt: now,
+    deleted: Boolean(existing.deleted),
+    deletedAt: existing.deletedAt,
     updatedAt: now,
     isRecurring: false,
     recurrence: {
@@ -1247,8 +2461,8 @@ const cancelGeneratedRecurringAppointment = async ({
       where: { id: generatedAppointmentId },
       data: {
         status: "cancelled",
-        deleted: true,
-        deletedAt: now,
+        deleted: Boolean(existing.deleted),
+        deletedAt: existing.deletedAt || null,
         updatedAt: now,
         isRecurring: false,
         recurrence: (nextState as any).recurrence,
@@ -1269,7 +2483,7 @@ const cancelGeneratedRecurringAppointment = async ({
     changedByName || "System",
     "status_change",
     0,
-    `Recurring appointment removed because recurrence was disabled on ${formatRecurringLogDate(rootAppointment.date)}.`
+    `Recurring appointment cancelled because recurrence was disabled on ${formatRecurringLogDate(rootAppointment.date)}.`
   );
 
   const parentId = String(existingRecurrence?.generatedFromId || existingRecurrence?.sourceAppointmentId || "").trim();
@@ -1364,6 +2578,30 @@ export const reconcileAppointmentRecurrence = async ({
   }
 
   if (requestedRecurrence.enabled) {
+    const splitAppointment = await maybeSplitRecurringSeriesAtAppointment({
+      appointment,
+      allAppointments,
+      requestedRecurrence,
+      recurrenceInputProvided,
+      changedBy,
+      changedByName,
+      doctorStaff,
+    });
+    if (splitAppointment) return splitAppointment;
+
+    const overwrittenHeadAppointment = await maybeOverwriteRecurringSeriesHead({
+      appointment,
+      allAppointments,
+      requestedRecurrence,
+      recurrenceInputProvided,
+      changedBy,
+      changedByName,
+      doctorStaff,
+    });
+    if (overwrittenHeadAppointment) return overwrittenHeadAppointment;
+  }
+
+  if (requestedRecurrence.enabled) {
     const existingGeneratedAppointmentId = normalizeId(existingRecurrence?.generatedAppointmentId);
     const requestedGeneratedAppointmentId = normalizeId(requestedRecurrence.generatedAppointmentId);
     const activeRecurringChildAppointment = await getActiveRecurringChildAppointment(appointment.id);
@@ -1384,6 +2622,26 @@ export const reconcileAppointmentRecurrence = async ({
   }
 
   if (!requestedRecurrence.enabled) {
+    // ════════════════════════════════════════════════════════════════════════════════
+    // GUARD: If user explicitly selected DO NOT REPEAT (recurrenceInputProvided === true)
+    // without specifying explicit deletions, just update the appointment recurrence to
+    // disabled WITHOUT cascading cancellations. This preserves the series for mid-series edits.
+    // ════════════════════════════════════════════════════════════════════════════════
+    if (
+      recurrenceInputProvided &&
+      !requestedDeletionIds &&
+      !requestedRecurrence.generatedAppointmentId
+    ) {
+      console.log(`[RECURRENCE] DO NOT REPEAT selected: updating appointment ${appointment.id} to disabled recurrence without cancellations`);
+      return writeAppointmentRecurrence(appointment, {
+        ...requestedRecurrence,
+        enabled: false,
+        generatedAppointmentId: null,
+        generatedAppointmentDate: null,
+        cancelledAt: new Date().toISOString(),
+      });
+    }
+
     if (
       !existingRecurrence?.enabled &&
       !requestedRecurrence.generatedAppointmentId &&
@@ -1442,128 +2700,254 @@ export const reconcileAppointmentRecurrence = async ({
     });
   }
 
-  const targetDate = getRecurrenceTargetDate(appointment.date, requestedRecurrence);
-  if (!targetDate) return appointment;
-
-  const existingGeneratedAppointment = requestedRecurrence.generatedAppointmentId
-    ? toAppointment(
-        await prisma.appointment.findUnique({
-          where: { id: requestedRecurrence.generatedAppointmentId },
-        })
-      )
-    : null;
-  const existingGeneratedAppointmentId =
-    existingGeneratedAppointment && !existingGeneratedAppointment.deleted
-      ? existingGeneratedAppointment.id
-      : null;
-
-  const generatedDate = findRecurringAppointmentDate({
-    appointment,
-    allAppointments,
-    targetDate,
-    existingGeneratedAppointmentId,
-    doctorStaff,
-  });
-
-  if (!generatedDate) return appointment;
-
   const sourceRecurringSeriesId = await syncRecurringTablesForAppointment(
     appointment,
-    requestedRecurrence
+    { ...requestedRecurrence, repeatCount: normalizeRepeatCount(requestedRecurrence.repeatCount) }
   );
+  const desiredRepeatCount = normalizeRepeatCount(requestedRecurrence.repeatCount);
   const recurrenceForGeneration = sourceRecurringSeriesId
-    ? { ...requestedRecurrence, recurringSeriesId: sourceRecurringSeriesId }
-    : requestedRecurrence;
-
-  let generatedAppointment: Appointment;
-  const generatedData = buildGeneratedAppointmentData({
-    source: appointment,
-    generatedDate,
-    recurrence: recurrenceForGeneration,
-    generatedAppointmentId: existingGeneratedAppointmentId || undefined,
-  });
-
-  if (existingGeneratedAppointmentId && existingGeneratedAppointment) {
-    const previousState = { ...existingGeneratedAppointment };
-    const generatedUpdateData = { ...generatedData } as any;
-    const existingGeneratedRecurrence = normalizeAppointmentRecurrence(
-      (existingGeneratedAppointment as any).recurrence
-    );
-    if (existingGeneratedRecurrence?.enabled) {
-      const createdFromMetadata = getImmutableCreatedFromMetadata(
-        existingGeneratedRecurrence,
-        existingGeneratedAppointment,
-        appointment
-      );
-      generatedUpdateData.recurrence = {
-        ...existingGeneratedRecurrence,
-        recurringSeriesId:
-          sourceRecurringSeriesId ||
-          existingGeneratedRecurrence.recurringSeriesId ||
-          (existingGeneratedAppointment as any).recurringSeriesId ||
-          null,
-        generatedFromId: appointment.id,
-        generatedFromDate: appointment.date,
-        ...createdFromMetadata,
+    ? {
+        ...requestedRecurrence,
+        repeatCount: desiredRepeatCount,
+        recurringSeriesId: sourceRecurringSeriesId,
+        sourceAppointmentId: appointment.id || null,
+        sourceAppointmentDate: appointment.date || null,
+      }
+    : {
+        ...requestedRecurrence,
+        repeatCount: desiredRepeatCount,
+        sourceAppointmentId: appointment.id || null,
+        sourceAppointmentDate: appointment.date || null,
       };
-      generatedUpdateData.isRecurring = true;
+
+  const existingGeneratedChain = (await getRecurringGeneratedAppointments(appointment.id))
+    .filter((generatedAppointment) => !isInactiveAppointment(generatedAppointment));
+  const existingGeneratedChainIds = new Set(
+    existingGeneratedChain
+      .map((generatedAppointment) => String(generatedAppointment.id || ""))
+      .filter(Boolean)
+  );
+  const generatedAppointments: Appointment[] = [];
+  let appointmentsForConflict = allAppointments.filter(
+    (candidate) => !existingGeneratedChainIds.has(String(candidate.id || ""))
+  );
+  let parentAppointment = appointment;
+
+  for (let index = 0; index < desiredRepeatCount; index += 1) {
+    const targetDate = getRecurrenceTargetDate(parentAppointment.date, {
+      ...recurrenceForGeneration,
+      generatedFromId: parentAppointment.id || null,
+      generatedFromDate: parentAppointment.date || null,
+      sourceAppointmentId: appointment.id || null,
+      sourceAppointmentDate: appointment.date || null,
+    });
+    if (!targetDate) break;
+
+    const existingGeneratedAppointment = existingGeneratedChain[index] || null;
+    const existingGeneratedAppointmentId =
+      existingGeneratedAppointment && !existingGeneratedAppointment.deleted
+        ? existingGeneratedAppointment.id
+        : null;
+
+    const generatedDate = findRecurringAppointmentDate({
+      appointment: parentAppointment,
+      allAppointments: appointmentsForConflict,
+      targetDate,
+      existingGeneratedAppointmentId,
+      doctorStaff,
+    });
+
+    if (!generatedDate) break;
+
+    let generatedAppointment: Appointment;
+    const generatedData = buildGeneratedAppointmentData({
+      source: parentAppointment,
+      generatedDate,
+      recurrence: recurrenceForGeneration,
+      generatedAppointmentId: existingGeneratedAppointmentId || undefined,
+    });
+
+    if (existingGeneratedAppointmentId && existingGeneratedAppointment) {
+      const previousState = { ...existingGeneratedAppointment };
+      const generatedUpdateData = { ...generatedData } as any;
+      const existingGeneratedRecurrence = normalizeAppointmentRecurrence(
+        (existingGeneratedAppointment as any).recurrence
+      );
+      if (existingGeneratedRecurrence?.enabled) {
+        const createdFromMetadata = getImmutableCreatedFromMetadata(
+          existingGeneratedRecurrence,
+          existingGeneratedAppointment,
+          parentAppointment
+        );
+        generatedUpdateData.recurrence = {
+          ...existingGeneratedRecurrence,
+          recurringSeriesId:
+            sourceRecurringSeriesId ||
+            existingGeneratedRecurrence.recurringSeriesId ||
+            (existingGeneratedAppointment as any).recurringSeriesId ||
+            null,
+          generatedFromId: parentAppointment.id,
+          generatedFromDate: parentAppointment.date,
+          ...createdFromMetadata,
+        };
+        generatedUpdateData.isRecurring = true;
+      }
+      delete generatedUpdateData.id;
+      generatedAppointment = toAppointment(
+        await prisma.appointment.update({
+          where: { id: existingGeneratedAppointmentId },
+          data: {
+            ...generatedUpdateData,
+            createdAt: existingGeneratedAppointment.createdAt || generatedData.createdAt,
+          } as any,
+        })
+      );
+      const changeType =
+        previousState.date !== generatedAppointment.date || previousState.time !== generatedAppointment.time
+          ? "rescheduled"
+          : "update";
+
+      await createAppointmentLog(
+        generatedAppointment.id!,
+        previousState,
+        generatedAppointment,
+        changedBy,
+        changedByName || "System",
+        changeType,
+        0,
+        "Updated from repeating appointment changes."
+      );
+    } else {
+      generatedAppointment = toAppointment(
+        await prisma.appointment.create({ data: generatedData as any })
+      );
+
+      await createAppointmentLog(
+        generatedAppointment.id!,
+        { status: "none", paymentStatus: "none", price: 0, balance: 0, totalPaid: 0 } as any,
+        generatedAppointment,
+        changedBy,
+        changedByName || "System",
+        "update",
+        0,
+        `Created from repeating schedule from ${formatRecurringLogDate(parentAppointment.date)}.`
+      );
     }
-    delete generatedUpdateData.id;
-    generatedAppointment = toAppointment(
-      await prisma.appointment.update({
-        where: { id: existingGeneratedAppointmentId },
-        data: {
-          ...generatedUpdateData,
-          createdAt: existingGeneratedAppointment.createdAt || generatedData.createdAt,
-        } as any,
-      })
-    );
-    const changeType =
-      previousState.date !== generatedAppointment.date || previousState.time !== generatedAppointment.time
-        ? "rescheduled"
-        : "update";
 
-    await createAppointmentLog(
-      generatedAppointment.id!,
-      previousState,
+    generatedAppointment = await syncGeneratedRecurringTables({
+      source: parentAppointment,
       generatedAppointment,
-      changedBy,
-      changedByName || "System",
-      changeType,
-      0,
-      "Updated from recurring appointment changes."
-    );
-  } else {
-    generatedAppointment = toAppointment(
-      await prisma.appointment.create({ data: generatedData as any })
-    );
+      recurrence: recurrenceForGeneration,
+      seriesId: sourceRecurringSeriesId,
+    });
 
-    await createAppointmentLog(
-      generatedAppointment.id!,
-      { status: "none", paymentStatus: "none", price: 0, balance: 0, totalPaid: 0 } as any,
+    generatedAppointments.push(generatedAppointment);
+    appointmentsForConflict = [
+      ...appointmentsForConflict.filter(
+        (existingAppointment) => String(existingAppointment.id || "") !== String(generatedAppointment.id || "")
+      ),
       generatedAppointment,
-      changedBy,
-      changedByName || "System",
-      "update",
-      0,
-      `Created from recurring schedule from ${formatRecurringLogDate(appointment.date)}.`
-    );
+    ];
+    parentAppointment = generatedAppointment;
   }
-  generatedAppointment = await syncGeneratedRecurringTables({
-    source: appointment,
-    generatedAppointment,
-    recurrence: recurrenceForGeneration,
-    seriesId: sourceRecurringSeriesId,
-  });
+
+  if (!generatedAppointments.length) return appointment;
+
+  const extraGeneratedAppointmentIds = existingGeneratedChain
+    .slice(generatedAppointments.length)
+    .map((generatedAppointment) => String(generatedAppointment.id || ""))
+    .filter(Boolean);
+  if (extraGeneratedAppointmentIds.length) {
+    await cancelRecurringSeriesAppointments({
+      appointment,
+      cancelAppointmentIds: extraGeneratedAppointmentIds,
+      changedBy,
+      changedByName,
+      includeCurrentAppointment: false,
+    });
+  }
+
+  for (let index = 0; index < generatedAppointments.length; index += 1) {
+    const current = generatedAppointments[index];
+    if (!current.id) continue;
+    const previous = index === 0 ? appointment : generatedAppointments[index - 1];
+    const next = generatedAppointments[index + 1] || null;
+    const existingGeneratedRecurrence = normalizeAppointmentRecurrence((current as any).recurrence);
+    const createdFromMetadata = getImmutableCreatedFromMetadata(
+      existingGeneratedRecurrence,
+      current,
+      previous
+    );
+    const generatedRecurrence: AppointmentRecurrencePayload = {
+      ...(existingGeneratedRecurrence || {}),
+      enabled: Boolean(next),
+      option: recurrenceForGeneration.option,
+      customDate: recurrenceForGeneration.customDate || null,
+      repeatCount: normalizeRepeatCount(Math.max(1, desiredRepeatCount - index - 1)),
+      recurringSeriesId: sourceRecurringSeriesId || null,
+      generatedFromId: previous?.id || null,
+      generatedFromDate: previous?.date || null,
+      sourceAppointmentId: previous?.id || current.id || null,
+      sourceAppointmentDate: previous?.date || current.date || null,
+      ...createdFromMetadata,
+      generatedAppointmentId: next?.id || null,
+      generatedAppointmentDate: next?.date || null,
+      lastGeneratedAt: new Date().toISOString(),
+    };
+
+    await prisma.appointment.update({
+      where: { id: current.id },
+      data: {
+        recurrence: generatedRecurrence as any,
+        isRecurring: Boolean(next),
+        recurringSeriesId: sourceRecurringSeriesId || null,
+        updatedAt: new Date(),
+      } as any,
+    });
+
+    if (sourceRecurringSeriesId) {
+      await syncRecurringOccurrenceRecord({
+        appointment: {
+          ...current,
+          recurrence: generatedRecurrence,
+          recurringSeriesId: sourceRecurringSeriesId,
+        } as Appointment,
+        recurrence: generatedRecurrence,
+        seriesId: sourceRecurringSeriesId,
+        status: RECURRENCE_OCCURRENCE_STATUS_ACTIVE,
+      });
+    }
+  }
 
   const sourceRecurrence: AppointmentRecurrencePayload = {
     ...recurrenceForGeneration,
     enabled: true,
     sourceAppointmentId: appointment.id,
-    generatedAppointmentId: generatedAppointment.id || null,
-    generatedAppointmentDate: generatedAppointment.date || null,
+    sourceAppointmentDate: appointment.date,
+    repeatCount: desiredRepeatCount,
+    generatedAppointmentId: generatedAppointments[0]?.id || null,
+    generatedAppointmentDate: generatedAppointments[0]?.date || null,
     lastGeneratedAt: new Date().toISOString(),
   };
+
+  if (sourceRecurringSeriesId) {
+    const sequenceAppointments = [appointment, ...generatedAppointments];
+    const seriesEndDate = getRecurringSeriesEndDate(
+      sequenceAppointments.map((sequenceAppointment) => ({ appointment: sequenceAppointment }))
+    ) || appointment.date || null;
+    await (prisma as any).recurringSeries.update({
+      where: { id: sourceRecurringSeriesId },
+      data: {
+        endDate: seriesEndDate,
+        status:
+          sequenceAppointments.length > 1
+            ? RECURRENCE_SERIES_STATUS_ACTIVE
+            : RECURRENCE_SERIES_STATUS_STOPPED,
+        stoppedAt: sequenceAppointments.length > 1 ? null : new Date(),
+        updatedAt: new Date(),
+      },
+    });
+  }
 
   return writeAppointmentRecurrence(appointment, sourceRecurrence);
 };

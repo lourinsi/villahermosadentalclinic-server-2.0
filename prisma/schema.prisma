@@ -120,12 +120,16 @@ model RecurringSeries {
   rootAppointmentId String
   interval          String
   customDate        String?
+  startDate         String?
+  endDate           String?
   status            String
   createdAt         DateTime?
   updatedAt         DateTime?
   stoppedAt         DateTime?
 
   @@index([rootAppointmentId])
+  @@index([startDate])
+  @@index([endDate])
   @@index([status])
   @@map("recurring_series")
 }
