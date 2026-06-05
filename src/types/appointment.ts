@@ -27,6 +27,8 @@ export interface Appointment {
   recurrence?: any;
   isRecurring?: boolean;
   recurringSeriesId?: string | null;
+  parentAppointmentId?: string | null;
+  childAppointmentId?: string | null;
   patientFirstName?: string | null;
   patientLastName?: string | null;
   patientEmail?: string | null;
@@ -63,7 +65,7 @@ export interface Appointment {
   createdAt?: Date;
   updatedAt?: Date;
   deleted?: boolean;
-  deletedAt?: Date;
+  deletedAt?: Date | null;
 }
 
 export interface ApiResponse<T> {

@@ -7,7 +7,7 @@ import { DoctorIdentity } from "./doctorIdentity";
 import { getPastRestrictedAppointmentStatus } from "./appointmentStatusLifecycle";
 import { prisma } from "../lib/prisma";
 
-const RECURRING_APPOINTMENT_OPTIONS = ["1 month", "3 months", "6 months", "Custom"] as const;
+const RECURRING_APPOINTMENT_OPTIONS = ["7 days", "1 month", "3 months", "Custom"] as const;
 type RecurringAppointmentOption = typeof RECURRING_APPOINTMENT_OPTIONS[number];
 
 export type AppointmentRecurrencePayload = {
@@ -781,14 +781,12 @@ export const cancelRecurringSeriesAppointments = async ({
     const isCurrentAppointment = appointmentToCancel.id === appointment.id;
     const previousState = { ...appointmentToCancel };
     const existingRecurrence = normalizeAppointmentRecurrence((appointmentToCancel as any).recurrence);
-    const shouldMarkDeleted =
-      appointmentToCancel.deleted ||
-      (!isCurrentAppointment && deleteRelatedAppointments);
+    const shouldMarkDeleted = appointmentToCancel.deleted;
     const nextState: Appointment = {
       ...appointmentToCancel,
       status: "cancelled",
-      deleted: shouldMarkDeleted,
-      deletedAt: shouldMarkDeleted ? appointmentToCancel.deletedAt || now : appointmentToCancel.deletedAt,
+      deleted: appointmentToCancel.deleted,
+      deletedAt: appointmentToCancel.deletedAt,
       updatedAt: now,
       isRecurring: false,
       recurrence: {
@@ -1013,14 +1011,20 @@ const getRecurrenceTargetDate = (appointmentDate: string, recurrence: Appointmen
 
   if (!sourceDate) return null;
 
-  const monthsByOption: Record<RecurringAppointmentOption, number> = {
-    "1 month": 1,
-    "3 months": 3,
-    "6 months": 6,
-    Custom: 1,
+  const daysByOption: Record<RecurringAppointmentOption, { type: 'days' | 'months'; value: number }> = {
+    "7 days": { type: 'days', value: 7 },
+    "1 month": { type: 'months', value: 1 },
+    "3 months": { type: 'months', value: 3 },
+    Custom: { type: 'months', value: 1 },
   };
 
-  return addMonthsClamped(sourceDate, monthsByOption[recurrence.option] || 1);
+  const config = daysByOption[recurrence.option] || { type: 'months', value: 1 };
+  if (config.type === 'days') {
+    const result = new Date(sourceDate);
+    result.setDate(sourceDate.getDate() + config.value);
+    return result;
+  }
+  return addMonthsClamped(sourceDate, config.value);
 };
 
 const hasAppointmentConflict = ({
@@ -1156,6 +1160,7 @@ const buildGeneratedAppointmentData = ({
     recurrence: recurrenceForGeneratedAppointment,
     isRecurring: false,
     recurringSeriesId: recurrenceForGeneratedAppointment.recurringSeriesId || null,
+    parentAppointmentId: source.id || null,
   };
 };
 
@@ -1176,6 +1181,7 @@ const writeAppointmentRecurrence = async (
       recurrence: recurrenceToSave as any,
       isRecurring: Boolean(recurrenceToSave.enabled),
       recurringSeriesId,
+      childAppointmentId: recurrenceToSave.generatedAppointmentId || null,
       updatedAt: new Date(),
     } as any,
   });
@@ -1225,8 +1231,8 @@ const cancelGeneratedRecurringAppointment = async ({
   const nextState: Appointment = {
     ...existing,
     status: "cancelled",
-    deleted: true,
-    deletedAt: now,
+    deleted: existing.deleted,
+    deletedAt: existing.deletedAt || null,
     updatedAt: now,
     isRecurring: false,
     recurrence: {
@@ -1247,11 +1253,12 @@ const cancelGeneratedRecurringAppointment = async ({
       where: { id: generatedAppointmentId },
       data: {
         status: "cancelled",
-        deleted: true,
-        deletedAt: now,
+        deleted: existing.deleted,
+        deletedAt: existing.deletedAt,
         updatedAt: now,
         isRecurring: false,
         recurrence: (nextState as any).recurrence,
+        parentAppointmentId: existing.parentAppointmentId || null,
       } as any,
     })
   );
@@ -1302,7 +1309,8 @@ const cancelGeneratedRecurringAppointment = async ({
             cancelledAt: now.toISOString(),
           } as any,
           isRecurring: false,
-          updatedAt: now,
+            childAppointmentId: null,
+            updatedAt: now,
         } as any,
       });
       await markRecurringOccurrenceStatus(
@@ -1442,6 +1450,16 @@ export const reconcileAppointmentRecurrence = async ({
     });
   }
 
+  // If the caller did not provide recurrence input and there is no existing
+  // generated appointment pointer for this source, avoid auto-generating a
+  // new occurrence. This prevents accidental creation of child appointments
+  // when the client only changed date/time but did not intend to modify
+  // recurrence behavior (for example when the UI had 'Do not repeat' but
+  // the change wasn't included in the payload).
+  if (!recurrenceInputProvided && !normalizeId(existingRecurrence?.generatedAppointmentId)) {
+    return appointment;
+  }
+
   const targetDate = getRecurrenceTargetDate(appointment.date, requestedRecurrence);
   if (!targetDate) return appointment;
 
@@ -1455,13 +1473,30 @@ export const reconcileAppointmentRecurrence = async ({
   const existingGeneratedAppointmentId =
     existingGeneratedAppointment && !existingGeneratedAppointment.deleted
       ? existingGeneratedAppointment.id
-      : null;
+      : undefined;
+
+  // If the existing generated appointment is scheduled on or before the source
+  // appointment date, do not treat it as the updatable generated occurrence.
+  // Updating such an occurrence can cause previously earlier appointments
+  // to be moved forward unexpectedly (cascade reschedules). Instead, create
+  // a new generated appointment for the next occurrence and leave the
+  // existing appointment alone.
+  let existingGeneratedAppointmentIdForUpdate: string | undefined = existingGeneratedAppointmentId;
+  try {
+    const existingGenDate = existingGeneratedAppointment ? parseDateOnly(existingGeneratedAppointment.date) : null;
+    const sourceDateObj = parseDateOnly(appointment.date);
+    if (existingGenDate && sourceDateObj && existingGenDate.getTime() <= sourceDateObj.getTime()) {
+      existingGeneratedAppointmentIdForUpdate = undefined;
+    }
+  } catch (e) {
+    // ignore parsing errors and fall back to default behavior
+  }
 
   const generatedDate = findRecurringAppointmentDate({
     appointment,
     allAppointments,
     targetDate,
-    existingGeneratedAppointmentId,
+    existingGeneratedAppointmentId: existingGeneratedAppointmentIdForUpdate,
     doctorStaff,
   });
 
@@ -1480,10 +1515,10 @@ export const reconcileAppointmentRecurrence = async ({
     source: appointment,
     generatedDate,
     recurrence: recurrenceForGeneration,
-    generatedAppointmentId: existingGeneratedAppointmentId || undefined,
+    generatedAppointmentId: existingGeneratedAppointmentIdForUpdate || undefined,
   });
 
-  if (existingGeneratedAppointmentId && existingGeneratedAppointment) {
+  if (existingGeneratedAppointmentIdForUpdate && existingGeneratedAppointment) {
     const previousState = { ...existingGeneratedAppointment };
     const generatedUpdateData = { ...generatedData } as any;
     const existingGeneratedRecurrence = normalizeAppointmentRecurrence(
@@ -1511,7 +1546,7 @@ export const reconcileAppointmentRecurrence = async ({
     delete generatedUpdateData.id;
     generatedAppointment = toAppointment(
       await prisma.appointment.update({
-        where: { id: existingGeneratedAppointmentId },
+        where: { id: existingGeneratedAppointmentIdForUpdate },
         data: {
           ...generatedUpdateData,
           createdAt: existingGeneratedAppointment.createdAt || generatedData.createdAt,

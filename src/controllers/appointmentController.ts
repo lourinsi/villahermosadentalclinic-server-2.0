@@ -1482,6 +1482,67 @@ export const fetchRecurringAppointmentChain = async (req: Request<IdParams>, res
   }
 };
 
+export const fetchLinkedAppointment = async (req: Request<IdParams>, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: "Appointment ID is required" });
+
+    // attempt to populate req.user from auth token (if present)
+    try {
+      const authToken = (req as any).cookies?.authToken || (req.headers.authorization || "").split(" ")[1];
+      if (authToken) {
+        try {
+          (req as any).user = jwt.verify(authToken, JWT_SECRET);
+        } catch {
+          // ignore invalid token
+        }
+      }
+    } catch {
+      // ignore auth cookie/header parsing failures
+    }
+
+    const appointment = await prisma.appointment.findUnique({ where: { id } });
+    if (!appointment || appointment.deleted) {
+      return res.status(404).json({ success: false, message: "Appointment not found" });
+    }
+
+    const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
+    const authUser = (req as any).user;
+    const isAllowed =
+      isStaffRole(req) ||
+      (authUser && (authUser.id === appointment.patientId || authUser.patientId === appointment.patientId)) ||
+      resolvePublicAppointmentToken(publicToken) === id;
+
+    if (!isAllowed) return res.status(403).json({ success: false, message: "Not authorized to view linked appointment" });
+
+    const doctorStaff = await getActiveDoctorStaff();
+
+    const parentId = String(appointment.parentAppointmentId || (appointment.recurrence as any)?.generatedFromId || (appointment.recurrence as any)?.sourceAppointmentId || "").trim() || null;
+    const childId = String(appointment.childAppointmentId || (appointment.recurrence as any)?.generatedAppointmentId || "").trim() || null;
+
+    const parent = parentId ? await prisma.appointment.findUnique({ where: { id: parentId } }) : null;
+    const child = childId ? await prisma.appointment.findUnique({ where: { id: childId } }) : null;
+
+    const patientRecord = await getActivePatientIdentity(appointment.patientId);
+
+    res.json({
+      success: true,
+      message: "Linked appointment retrieved successfully",
+      data: {
+        parent: parent && !parent.deleted ? withResolvedDoctor(withResolvedPatient(parent as any, patientRecord ? [patientRecord] : []), doctorStaff) : null,
+        child: child && !child.deleted ? withResolvedDoctor(withResolvedPatient(child as any, patientRecord ? [patientRecord] : []), doctorStaff) : null,
+      },
+    });
+  } catch (error) {
+    console.error("[APPOINTMENT LINKED GET] Error fetching linked appointment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching linked appointment",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
 export const fetchPaymentLogs = async (req: Request<IdParams>, res: Response) => {
   try {
     const { id } = req.params;

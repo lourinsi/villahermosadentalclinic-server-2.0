@@ -8,6 +8,7 @@ import {
   deleteAppointment,
   bookPublicAppointment,
   fetchRecurringAppointmentChain,
+  fetchLinkedAppointment,
   fetchAppointmentLogs,
   fetchPaymentLogs,
 } from "../controllers/appointmentController";
@@ -23,6 +24,8 @@ router.get("/public-availability", getPublicAppointmentAvailability);
 
 // GET - Recurring appointment chain preview
 router.get("/:id/recurrence-chain", fetchRecurringAppointmentChain);
+// GET - Linked appointment (parent <-> child convenience endpoint)
+router.get("/:id/linked", fetchLinkedAppointment);
 
 // GET - Appointment logs (supports public token or authenticated staff/patient)
 router.get("/:id/logs", fetchAppointmentLogs);
