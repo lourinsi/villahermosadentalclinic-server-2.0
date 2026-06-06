@@ -24,11 +24,6 @@ export interface Appointment {
   paymentMethod?: string; // Payment method (e.g., 'cash', 'card', 'check')
   balance?: number;
   totalPaid?: number;
-  recurrence?: any;
-  isRecurring?: boolean;
-  recurringSeriesId?: string | null;
-  parentAppointmentId?: string | null;
-  childAppointmentId?: string | null;
   patientFirstName?: string | null;
   patientLastName?: string | null;
   patientEmail?: string | null;
