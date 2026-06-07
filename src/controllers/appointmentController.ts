@@ -35,12 +35,6 @@ import {
   DoctorIdentity,
 } from "../utils/doctorIdentity";
 import {
-  buildInitialAppointmentRecurrence,
-  cancelRecurringSeriesAppointments,
-  getRecurringGeneratedAppointments,
-  reconcileAppointmentRecurrence,
-} from "../utils/appointmentRecurrence";
-import {
   getPatientDisplayName,
   getPatientSearchText,
   PatientIdentity,
@@ -83,16 +77,7 @@ const resolvePublicAppointmentToken = (token: string): string | null => {
   return null;
 };
 
-// Augment the Appointment type to include properties used in this controller
-interface ExtendedAppointment extends Appointment {
-  parentAppointmentId?: string | null;
-  childAppointmentId?: string | null;
-  recurrence?: any; // Assuming recurrence can be any object for now
-  isRecurring?: boolean;
-  recurringSeriesId?: string | null;
-}
-
-const toAppointment = (appointment: unknown): ExtendedAppointment => appointment as ExtendedAppointment;
+const toAppointment = (appointment: unknown): Appointment => appointment as Appointment;
 type IdParams = { id: string };
 
 const getActiveDoctorStaff = async (): Promise<DoctorIdentity[]> =>
@@ -145,101 +130,6 @@ const getActivePatientIdentity = async (patientId?: string | null): Promise<Pati
     where: { id, deleted: false },
     select: patientIdentitySelect,
   }) as Promise<PatientIdentity | null>;
-};
-
-class LinkValidationError extends Error {}
-
-const normalizeLinkId = (value?: string | null) => {
-  const normalized = String(value || "").trim();
-  return normalized || null;
-};
-
-const traceLinkedAppointmentIds = async (
-  tx: any,
-  startId: string,
-  direction: "parent" | "child"
-): Promise<Set<string>> => {
-  const visited = new Set<string>();
-  let currentId: string | null = startId;
-
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
-    const appointment = await tx.appointment.findUnique({
-      where: { id: currentId },
-      select: {
-        parentAppointmentId: true,
-        childAppointmentId: true,
-      },
-    });
-    if (!appointment) break;
-    currentId = normalizeLinkId(appointment[direction === "parent" ? "parentAppointmentId" : "childAppointmentId"] as string | null);
-  }
-
-  return visited;
-};
-
-const ensureParentChildLinkConstraints = async (
-  tx: any,
-  appointmentId: string,
-  parentAppointmentId?: string | null,
-  childAppointmentId?: string | null
-) => {
-  const normalizedParentId = normalizeLinkId(parentAppointmentId);
-  const normalizedChildId = normalizeLinkId(childAppointmentId);
-
-  if (normalizedParentId && normalizedParentId === appointmentId) {
-    throw new LinkValidationError("An appointment cannot be its own parent appointment.");
-  }
-  if (normalizedChildId && normalizedChildId === appointmentId) {
-    throw new LinkValidationError("An appointment cannot be its own child appointment.");
-  }
-  if (normalizedParentId && normalizedChildId && normalizedParentId === normalizedChildId) {
-    throw new LinkValidationError("A linked appointment cannot be both parent and child of the same appointment.");
-  }
-
-  if (normalizedParentId) {
-    const parent = await tx.appointment.findUnique({ where: { id: normalizedParentId } });
-    if (!parent || parent.deleted) {
-      throw new LinkValidationError("Parent appointment not found.");
-    }
-    if (parent.childAppointmentId && parent.childAppointmentId !== appointmentId) {
-      throw new LinkValidationError("Parent appointment already has an assigned child appointment.");
-    }
-    const existingChildLink = await tx.appointment.findFirst({
-      where: { parentAppointmentId: normalizedParentId, id: { not: appointmentId } },
-    });
-    if (existingChildLink) {
-      throw new LinkValidationError("Another appointment already references the same parent appointment.");
-    }
-
-    const ancestorIds = await traceLinkedAppointmentIds(tx, normalizedParentId, "parent");
-    const descendantIds = await traceLinkedAppointmentIds(tx, normalizedParentId, "child");
-    if (ancestorIds.has(appointmentId) || descendantIds.has(appointmentId)) {
-      throw new LinkValidationError("Linking this parent would create a cyclic appointment chain.");
-    }
-  }
-
-  if (normalizedChildId) {
-    const child = await tx.appointment.findUnique({ where: { id: normalizedChildId } });
-    if (!child || child.deleted) {
-      throw new LinkValidationError("Child appointment not found.");
-    }
-    if (child.parentAppointmentId && child.parentAppointmentId !== appointmentId) {
-      throw new LinkValidationError("Child appointment already has an assigned parent appointment.");
-    }
-    const existingParentLink = await tx.appointment.findFirst({
-      where: { childAppointmentId: normalizedChildId, id: { not: appointmentId } },
-    });
-    if (existingParentLink) {
-      throw new LinkValidationError("Another appointment already references the same child appointment.");
-    }
-
-    const ancestorIds = await traceLinkedAppointmentIds(tx, normalizedChildId, "parent");
-    const descendantIds = await traceLinkedAppointmentIds(tx, normalizedChildId, "child");
-    if (ancestorIds.has(appointmentId) || descendantIds.has(appointmentId)) {
-      throw new LinkValidationError("Linking this child would create a cyclic appointment chain.");
-    }
-  }
 };
 
 const resolveAppointmentDoctorName = (
@@ -315,7 +205,6 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     appointment.date,
     appointment.status || "scheduled"
   );
-  const recurrence = buildInitialAppointmentRecurrence((appointment as any).recurrence);
 
   return {
     id: `apt_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
@@ -515,6 +404,7 @@ export const addAppointment = async (
     const appointments = await readAppointmentsWithLifecycle();
     const doctorStaff = await getActiveDoctorStaff();
     const appointmentInput: Appointment = req.body;
+    const appointmentLogNotes = (req.body as any).logNotes || appointmentInput.notes || "";
     const isSeeding = req.body.isSeeding === true;
 
     const requestedStatus = getPastRestrictedAppointmentStatus(
@@ -598,16 +488,7 @@ export const addAppointment = async (
 
     await cancelOverlappingPendingAppointments(appointments, newAppointment, changedBy, changedByName, doctorStaff);
 
-    let created = toAppointment(await prisma.appointment.create({ data: createData as any }));
-    
-    created = await reconcileAppointmentRecurrence({
-      appointment: created,
-      allAppointments: [...appointments, created],
-      recurrenceInput: (appointmentInput as any).recurrence,
-      changedBy,
-      changedByName,
-      doctorStaff,
-    });
+    const created = toAppointment(await prisma.appointment.create({ data: createData as any }));
     const createdForResponse = withResolvedDoctor(
       withResolvedPatient(created as any, patientRecord ? [patientRecord] : []),
       doctorStaff
@@ -634,7 +515,7 @@ export const addAppointment = async (
       changedByName,
       "update",
       created.totalPaid || 0,
-      created.notes
+      appointmentLogNotes
     );
 
     if (created.totalPaid && created.totalPaid > 0) {
@@ -664,13 +545,6 @@ export const addAppointment = async (
     });
   } catch (error) {
     console.error("[APPOINTMENT CREATE] ERROR:", error);
-    if (error instanceof LinkValidationError) {
-      return res.status(409).json({
-        success: false,
-        message: error.message,
-        error: error.message,
-      });
-    }
     res.status(500).json({
       success: false,
       message: "Error adding appointment",
@@ -1069,7 +943,6 @@ export const updateAppointment = async (
     const oldPaymentStatus = oldAppointment.paymentStatus || "unpaid";
     const oldTotalPaidValue = derivedTotalPaid || 0;
     const newTotalPaidValue = updatedAppointment.totalPaid || 0;
-    const recurrenceInputProvided = Object.prototype.hasOwnProperty.call(updates, "recurrence");
     const paymentAmount = newTotalPaidValue - oldTotalPaidValue;
 
     let logChangeType: any = "update";
@@ -1081,7 +954,7 @@ export const updateAppointment = async (
     else if (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus) logChangeType = "payment";
 
     if (paymentAmount > 0 || (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus)) {
-      await createPaymentLog( // This will now just trigger a clone
+      await createPaymentLog(
         id,
         paymentAmount > 0 ? paymentAmount : 0,
         updatedAppointment.paymentMethod || "cash",
@@ -1093,84 +966,12 @@ export const updateAppointment = async (
       );
     }
 
-    const requestedParentAppointmentId = normalizeLinkId((updates as any).parentAppointmentId ?? (oldAppointment as ExtendedAppointment).parentAppointmentId);
-    const requestedChildAppointmentId = normalizeLinkId((updates as any).childAppointmentId ?? (oldAppointment as ExtendedAppointment).childAppointmentId);
-    const oldParentAppointmentId = normalizeLinkId((oldAppointment as ExtendedAppointment).parentAppointmentId);
-    const oldChildAppointmentId = normalizeLinkId((oldAppointment as ExtendedAppointment).childAppointmentId);
-    const linkUpdateRequested =
-      Object.prototype.hasOwnProperty.call(updates, "parentAppointmentId") ||
-      Object.prototype.hasOwnProperty.call(updates, "childAppointmentId");
-
-    let saved: Appointment;
-    if (linkUpdateRequested) {
-      saved = toAppointment(
-        await prisma.$transaction(async (tx) => {
-          await ensureParentChildLinkConstraints(
-            tx,
-            id,
-            requestedParentAppointmentId,
-            requestedChildAppointmentId
-          );
-
-          const updatedRecord = await tx.appointment.update({
-            where: { id },
-            data: buildAppointmentUpdateData(updatedAppointment) as any,
-          });
-
-          const reciprocalOps: Promise<any>[] = [];
-          if (oldParentAppointmentId && oldParentAppointmentId !== requestedParentAppointmentId) {
-            reciprocalOps.push(
-              tx.appointment.update({ // This will now just trigger a clone
-                where: { id: oldParentAppointmentId ?? undefined },
-                data: { childAppointmentId: null },
-              })
-            );
-          }
-          if (requestedParentAppointmentId && oldParentAppointmentId !== requestedParentAppointmentId) {
-            reciprocalOps.push(
-              tx.appointment.update({
-                where: { id: requestedParentAppointmentId },
-                data: { childAppointmentId: id },
-              })
-            );
-          }
-          if (oldChildAppointmentId && oldChildAppointmentId !== requestedChildAppointmentId) {
-            reciprocalOps.push(
-              tx.appointment.update({ // This will now just trigger a clone
-                where: { id: oldChildAppointmentId ?? undefined },
-                data: { parentAppointmentId: null },
-              })
-            );
-          }
-          if (requestedChildAppointmentId && oldChildAppointmentId !== requestedChildAppointmentId) {
-            reciprocalOps.push(
-              tx.appointment.update({
-                where: { id: requestedChildAppointmentId },
-                data: { parentAppointmentId: id },
-              })
-            );
-          }
-          if (reciprocalOps.length) await Promise.all(reciprocalOps);
-          return updatedRecord; // This will now just trigger a clone
-        })
-      );
-    } else {
-      saved = toAppointment(
-        await prisma.appointment.update({
-          where: { id },
-          data: buildAppointmentUpdateData(updatedAppointment) as any,
-        })
-      );
-    }
-    saved = await reconcileAppointmentRecurrence({
-      appointment: saved,
-      allAppointments: appointments.map((appointment) => appointment.id === saved.id ? saved : appointment),
-      recurrenceInput: (updates as any).recurrence,
-      recurrenceInputProvided,
-      changedBy,
-      changedByName,
-      doctorStaff,
-    });
+    const saved = toAppointment(
+      await prisma.appointment.update({
+        where: { id },
+        data: buildAppointmentUpdateData(updatedAppointment) as any,
+      })
+    );
     await createAppointmentLog(id, oldAppointment, saved, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
     const oldPatientRecord = oldAppointment.patientId === updatedAppointment.patientId
       ? patientRecord
@@ -1209,7 +1010,6 @@ export const updateAppointment = async (
       Object.prototype.hasOwnProperty.call(updates, "discount") ||
       Object.prototype.hasOwnProperty.call(updates, "notes") ||
       Object.prototype.hasOwnProperty.call(updates, "treatmentNotes") ||
-      Object.prototype.hasOwnProperty.call(updates, "recurrence") || // This will now just trigger a clone
       Object.prototype.hasOwnProperty.call(updates, "patientId") ||
       Object.prototype.hasOwnProperty.call(updates, "patientName");
 
@@ -1224,13 +1024,6 @@ export const updateAppointment = async (
     });
   } catch (error) {
     console.error("[APPOINTMENT UPDATE] Error updating appointment:", error);
-    if (error instanceof LinkValidationError) {
-      return res.status(409).json({
-        success: false,
-        message: error.message,
-        error: error.message,
-      });
-    }
     res.status(500).json({
       success: false,
       message: "Error updating appointment",
@@ -1257,15 +1050,6 @@ export const deleteAppointment = async (
       where: { id: req.params.id },
       data: { status: "cancelled", deleted: true, deletedAt: new Date(), updatedAt: new Date() },
     }));
-
-    await cancelRecurringSeriesAppointments({
-      appointment: deletedAppointment,
-      changedBy: (req as any).user?.id || (req as any).user?.username || "admin",
-      changedByName:
-        (req as any).user?.name ||
-        (req as any).user?.username ||
-        "Admin",
-    });
 
     if (appointment.id) {
       const patientRecord = await getActivePatientIdentity(appointment.patientId);
@@ -1322,7 +1106,6 @@ export const bookPublicAppointment = async (
       paymentMethod: paymentMethodFromClient,
       price: clientPrice,
       discount: clientDiscount,
-      recurrence,
     } = req.body;
 
     if (!firstName || !lastName || !phone || !date || !time || type == null) {
@@ -1424,6 +1207,7 @@ export const bookPublicAppointment = async (
       deleted: false,
     } as any;
 
+    const appointmentLogNotes = (req.body as any).logNotes || notes || "";
     const createData = buildAppointmentCreateData(appointmentInput as Appointment);
     const newAppointment = toAppointment(createData);
 
@@ -1434,14 +1218,6 @@ export const bookPublicAppointment = async (
     }
 
     let created = toAppointment(await prisma.appointment.create({ data: createData as any }));
-    created = await reconcileAppointmentRecurrence({
-      appointment: created,
-      allAppointments: [...appointments, created],
-      recurrenceInput: recurrence, // This will now just trigger a clone
-      changedBy: "patient",
-      changedByName: patientDisplayName,
-      doctorStaff,
-    });
     const createdForResponse = withResolvedDoctor(
       withResolvedPatient(created as any, [patient as PatientIdentity]),
       doctorStaff
@@ -1457,7 +1233,7 @@ export const bookPublicAppointment = async (
       patientDisplayName,
       "update",
       created.totalPaid || 0,
-      created.notes
+      appointmentLogNotes
     );
 
     if (created.totalPaid && created.totalPaid > 0) {
@@ -1560,140 +1336,6 @@ export const fetchAppointmentLogs = async (req: Request<IdParams>, res: Response
     res.status(500).json({
       success: false,
       message: "Error fetching logs",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-};
-
-export const fetchRecurringAppointmentChain = async (req: Request<IdParams>, res: Response) => {
-  try {
-    const { id } = req.params;
-    if (!id) return res.status(400).json({ success: false, message: "Appointment ID is required" });
-
-    try {
-      const authToken = (req as any).cookies?.authToken || (req.headers.authorization || "").split(" ")[1];
-      if (authToken) {
-        try {
-          (req as any).user = jwt.verify(authToken, JWT_SECRET);
-        } catch {
-          // ignore invalid token
-        }
-      }
-    } catch {
-      // ignore auth cookie/header parsing failures
-    }
-
-    const appointment = await prisma.appointment.findUnique({ where: { id } });
-    if (!appointment || appointment.deleted) {
-      return res.status(404).json({ success: false, message: "Appointment not found" });
-    }
-
-    const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
-    const authUser = (req as any).user;
-    const isAllowed =
-      isStaffRole(req) ||
-      (authUser && (authUser.id === appointment.patientId || authUser.patientId === appointment.patientId)) ||
-      resolvePublicAppointmentToken(publicToken) === id;
-
-    if (!isAllowed) return res.status(403).json({ success: false, message: "Not authorized to view recurring appointments" });
-
-    // Recurrence is deprecated, so this will always return an empty array.
-    // const chain = await getRecurringGeneratedAppointments(id);
-    const chainForResponse: any[] = [];
-
-    console.info("[APPOINTMENT RECURRENCE CHAIN GET] Linked recurring appointments", {
-      appointmentId: id,
-      linkedCount: chainForResponse.length,
-      linkedAppointments: chainForResponse.map((item) => ({
-        id: item.id,
-        date: item.date,
-        time: item.time, // This will now just trigger a clone
-        status: item.status, // This will now just trigger a clone
-        recurringSeriesId: item.recurringSeriesId, // This will now just trigger a clone
-        generatedFromId: // This will now just trigger a clone
-          (item.recurrence as any)?.generatedFromId || // This will now just trigger a clone
-          (item.recurrence as any)?.sourceAppointmentId || // This will now just trigger a clone
-          null, // This will now just trigger a clone
-      })),
-    });
-
-    res.json({
-      success: true,
-      message: "Recurring appointment chain retrieved successfully",
-      data: chainForResponse,
-    });
-  } catch (error) {
-    console.error("[APPOINTMENT RECURRENCE CHAIN GET] Error fetching recurring chain:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error fetching recurring appointment chain",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-};
-
-export const fetchLinkedAppointment = async (req: Request<IdParams>, res: Response) => {
-  try {
-    const { id } = req.params;
-    if (!id) return res.status(400).json({ success: false, message: "Appointment ID is required" });
-
-    // attempt to populate req.user from auth token (if present)
-    try {
-      const authToken = (req as any).cookies?.authToken || (req.headers.authorization || "").split(" ")[1];
-      if (authToken) {
-        try {
-          (req as any).user = jwt.verify(authToken, JWT_SECRET);
-        } catch {
-          // ignore invalid token
-        }
-      }
-    } catch {
-      // ignore auth cookie/header parsing failures
-    }
-
-    const appointment = await prisma.appointment.findUnique({ where: { id } });
-    if (!appointment || appointment.deleted) {
-      return res.status(404).json({ success: false, message: "Appointment not found" });
-    }
-
-    const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
-    const authUser = (req as any).user;
-    const isAllowed =
-      isStaffRole(req) ||
-      (authUser && (authUser.id === appointment.patientId || authUser.patientId === appointment.patientId)) ||
-      resolvePublicAppointmentToken(publicToken) === id;
-
-    if (!isAllowed) return res.status(403).json({ success: false, message: "Not authorized to view linked appointment" });
-
-    const doctorStaff = await getActiveDoctorStaff();
-    
-    // Fetch parent and child appointments if they exist
-    const parentId = (appointment as ExtendedAppointment).parentAppointmentId ?? undefined;
-    const childId = (appointment as ExtendedAppointment).childAppointmentId ?? undefined;
-    const parent = parentId
-      ? toAppointment(await prisma.appointment.findUnique({ where: { id: parentId } }))
-      : null;
-    const child = childId
-      ? toAppointment(await prisma.appointment.findUnique({ where: { id: childId } }))
-      : null;
-    
-
-    
-    const patientRecord = await getActivePatientIdentity(appointment.patientId);
-
-    res.json({
-      success: true,
-      message: "Linked appointment retrieved successfully",
-      data: {
-        parent: parent && !parent.deleted ? withResolvedDoctor(withResolvedPatient(parent as any, patientRecord ? [patientRecord] : []), doctorStaff) : null,
-        child: child && !child.deleted ? withResolvedDoctor(withResolvedPatient(child as any, patientRecord ? [patientRecord] : []), doctorStaff) : null,
-      },
-    });
-  } catch (error) {
-    console.error("[APPOINTMENT LINKED GET] Error fetching linked appointment:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error fetching linked appointment",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }

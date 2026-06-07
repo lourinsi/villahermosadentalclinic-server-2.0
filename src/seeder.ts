@@ -52,37 +52,6 @@ const createRecords = async (model: SeedModel, records: any[]) => {
 };
 
 const resetSeedData = async () => {
-  const seedRecurringSeries = await prisma.recurringSeries.findMany({
-    where: {
-      OR: [
-        { id: { startsWith: SEED_PREFIX } },
-        { rootAppointmentId: { startsWith: SEED_PREFIX } },
-      ],
-    },
-    select: { id: true },
-  });
-  const seedRecurringSeriesIds = seedRecurringSeries.map((series) => series.id);
-
-  await prisma.recurringOccurrence.deleteMany({
-    where: {
-      OR: [
-        { id: { startsWith: SEED_PREFIX } },
-        { appointmentId: { startsWith: SEED_PREFIX } },
-        { parentAppointmentId: { startsWith: SEED_PREFIX } },
-        { seriesId: { startsWith: SEED_PREFIX } },
-        { seriesId: { in: seedRecurringSeriesIds } },
-      ],
-    },
-  });
-  await prisma.recurringSeries.deleteMany({
-    where: {
-      OR: [
-        { id: { startsWith: SEED_PREFIX } },
-        { rootAppointmentId: { startsWith: SEED_PREFIX } },
-        { id: { in: seedRecurringSeriesIds } },
-      ],
-    },
-  });
   await prisma.paymentLog.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.appointmentLog.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.payment.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
@@ -181,9 +150,6 @@ const makeAppointment = ({
     balance,
     totalPaid,
     transactions: null,
-    recurrence: null,
-    isRecurring: false,
-    recurringSeriesId: null,
     createdAt: clampedCreatedAt,
     updatedAt: now,
     deleted: false,
@@ -212,9 +178,6 @@ const appointmentSnapshot = (appointment: any): JsonRecord => ({
   discount: appointment.discount || 0,
   balance: appointment.balance,
   totalPaid: appointment.totalPaid || 0,
-  recurrence: appointment.recurrence || null,
-  isRecurring: Boolean(appointment.isRecurring),
-  recurringSeriesId: appointment.recurringSeriesId || null,
 });
 
 async function main() {
@@ -988,29 +951,6 @@ async function main() {
   // Ensure any pre-existing payments/logs for these appointment IDs are removed
   // This prevents leftover transactions from previous seed runs producing duplicates.
   const seededAppointmentIds = appointments.map((a) => a.id);
-  const seededRecurringSeries = await prisma.recurringSeries.findMany({
-    where: { rootAppointmentId: { in: seededAppointmentIds } },
-    select: { id: true },
-  });
-  const seededRecurringSeriesIds = seededRecurringSeries.map((series) => series.id);
-
-  await prisma.recurringOccurrence.deleteMany({
-    where: {
-      OR: [
-        { appointmentId: { in: seededAppointmentIds } },
-        { parentAppointmentId: { in: seededAppointmentIds } },
-        { seriesId: { in: seededRecurringSeriesIds } },
-      ],
-    },
-  });
-  await prisma.recurringSeries.deleteMany({
-    where: {
-      OR: [
-        { rootAppointmentId: { in: seededAppointmentIds } },
-        { id: { in: seededRecurringSeriesIds } },
-      ],
-    },
-  });
   await prisma.payment.deleteMany({ where: { appointmentId: { in: seededAppointmentIds } } });
   await prisma.paymentLog.deleteMany({ where: { appointmentId: { in: seededAppointmentIds } } });
   await prisma.appointmentLog.deleteMany({ where: { appointmentId: { in: seededAppointmentIds } } });

@@ -97,11 +97,6 @@ model Appointment {
   balance            Float?
   totalPaid          Float?
   transactions       Json?
-  recurrence         Json?
-  isRecurring        Boolean   @default(false)
-  recurringSeriesId  String?
-  parentAppointmentId String?
-  childAppointmentId  String?
   createdAt          DateTime?
   updatedAt          DateTime?
   deleted            Boolean   @default(false)
@@ -111,45 +106,9 @@ model Appointment {
   @@index([doctor])
   @@index([doctorId])
   @@index([date])
-  @@index([parentAppointmentId])
-  @@index([childAppointmentId])
   @@index([status])
   @@index([paymentStatus])
-  @@index([recurringSeriesId])
   @@map("appointments")
-}
-
-model RecurringSeries {
-  id                String    @id
-  rootAppointmentId String
-  interval          String
-  customDate        String?
-  status            String
-  createdAt         DateTime?
-  updatedAt         DateTime?
-  stoppedAt         DateTime?
-
-  @@index([rootAppointmentId])
-  @@index([status])
-  @@map("recurring_series")
-}
-
-model RecurringOccurrence {
-  id                  String    @id
-  seriesId            String
-  appointmentId       String    @unique
-  parentAppointmentId String?
-  sequence            Int
-  generatedForDate    String
-  status              String
-  createdAt           DateTime?
-  updatedAt           DateTime?
-
-  @@index([seriesId])
-  @@index([parentAppointmentId])
-  @@index([generatedForDate])
-  @@index([status])
-  @@map("recurring_occurrences")
 }
 
 model AppointmentLog {
