@@ -15,7 +15,14 @@ export const createInventoryItem = async (
   try {
     const itemData: InventoryItem = req.body;
 
-    if (!itemData.item || !itemData.quantity || !itemData.unit || !itemData.costPerUnit) {
+    if (
+      !itemData.item ||
+      itemData.quantity === undefined ||
+      Number(itemData.quantity) < 0 ||
+      !itemData.unit ||
+      itemData.costPerUnit === undefined ||
+      Number(itemData.costPerUnit) <= 0
+    ) {
       return res.status(400).json({
         success: false,
         message: "Missing required fields: item, quantity, unit, costPerUnit",

@@ -36,6 +36,8 @@ export interface DetailedExpense {
   paymentMethod: string;
   status: string;
   recurring: boolean;
+  inventoryItemId?: string;
+  inventoryQuantity?: number;
 }
 
 export interface RecurringExpense {
@@ -54,6 +56,9 @@ export interface Payroll {
   bonus: number;
   total: number;
   status: string;
+  salaryRecordId?: string;
+  paymentDate?: string;
+  month?: string;
 }
 
 export interface RecentTransaction {

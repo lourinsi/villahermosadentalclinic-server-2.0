@@ -86,10 +86,33 @@ const nextMonthlyDueDate = (dateValue: string) => {
   return dateKey(new Date(date.getFullYear(), date.getMonth() + 1, date.getDate()));
 };
 
-const isCurrentMonth = (dateValue?: string | null) => {
-  const date = normalizeDate(dateValue);
-  return date ? monthKey(date) === monthKey(new Date()) : false;
+const normalizeCodeValue = (value?: string | null) =>
+  String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+type ExpenseStatus = "pending" | "paid" | "cancelled";
+
+const normalizeExpenseStatus = (value?: unknown): ExpenseStatus => {
+  const normalized = normalizeCodeValue(String(value || ""));
+  if (["paid", "settled", "complete", "completed"].includes(normalized)) return "paid";
+  if (["cancelled", "canceled", "void", "voided"].includes(normalized)) return "cancelled";
+  return "pending";
 };
+
+const isCancelledExpense = (expense: { status?: string | null }) =>
+  normalizeExpenseStatus(expense.status) === "cancelled";
+
+const SALARY_RECORD_TYPES = new Set(["salary", "payroll", "monthlysalary"]);
+
+const isSalaryRecord = (record: { type?: string | null }) =>
+  SALARY_RECORD_TYPES.has(normalizeCodeValue(record.type));
+
+const normalizePayrollMonth = (value?: unknown) => {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}$/.test(text) ? text : monthKey(new Date());
+};
+
+const isRecordInPayrollMonth = (record: { date?: string | null }, payrollMonth: string) =>
+  String(record.date || "").startsWith(`${payrollMonth}-`);
 
 const extractPaymentId = (description?: string | null) => {
   const match = String(description || "").match(/\bPayment\s+(pay_[A-Za-z0-9_-]+)/i);
@@ -244,32 +267,197 @@ export const createDetailedExpense = async (
       });
     }
 
+    const inventoryItemId = String(expenseData.inventoryItemId || "").trim();
+    const inventoryQuantity = toFiniteNumber(expenseData.inventoryQuantity);
+    if (inventoryItemId && inventoryQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Inventory quantity must be greater than zero when linking stock",
+      });
+    }
+    if (inventoryItemId && normalizeExpenseStatus(expenseData.status) === "cancelled") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked stock expenses must be pending or paid",
+      });
+    }
+
+    const expenseCreateData = {
+      id: `exp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      date: expenseData.date,
+      category: expenseData.category,
+      description: expenseData.description,
+      amount: Number(expenseData.amount),
+      vendor: expenseData.vendor || "",
+      paymentMethod: expenseData.paymentMethod || "",
+      status: normalizeExpenseStatus(expenseData.status),
+      recurring: Boolean(expenseData.recurring),
+    };
+
     const newExpense = toDetailedExpense(
-      await prisma.detailedExpense.create({
-        data: {
-          id: `exp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-          date: expenseData.date,
-          category: expenseData.category,
-          description: expenseData.description,
-          amount: Number(expenseData.amount),
-          vendor: expenseData.vendor || "",
-          paymentMethod: expenseData.paymentMethod || "",
-          status: expenseData.status || "pending",
-          recurring: Boolean(expenseData.recurring),
-        },
-      })
+      inventoryItemId
+        ? await prisma.$transaction(async (tx) => {
+            const inventoryItem = await tx.inventoryItem.findUnique({
+              where: { id: inventoryItemId },
+            });
+
+            if (!inventoryItem || inventoryItem.deleted) {
+              throw new Error("Linked inventory item not found");
+            }
+
+            const currentQuantity = toFiniteNumber(inventoryItem.quantity);
+            const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
+            const nextQuantity = currentQuantity + inventoryQuantity;
+
+            const createdExpense = await tx.detailedExpense.create({
+              data: expenseCreateData,
+            });
+
+            await tx.inventoryItem.update({
+              where: { id: inventoryItemId },
+              data: {
+                quantity: nextQuantity,
+                totalValue: nextQuantity * costPerUnit,
+                updatedAt: new Date(),
+              },
+            });
+
+            return createdExpense;
+          })
+        : await prisma.detailedExpense.create({
+            data: expenseCreateData,
+          })
     );
 
     res.status(201).json({
       success: true,
       message: "Detailed expense added successfully",
-      data: newExpense,
+      data: {
+        ...newExpense,
+        status: normalizeExpenseStatus(newExpense.status),
+      },
     });
   } catch (error) {
     console.error("[FINANCE CREATE_DETAILED_EXPENSE] ERROR:", error);
+    if (error instanceof Error && error.message === "Linked inventory item not found") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked inventory item not found",
+      });
+    }
     res.status(500).json({
       success: false,
       message: "Error adding detailed expense",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const updateDetailedExpense = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<DetailedExpense | null>>
+) => {
+  try {
+    const currentExpense = await prisma.detailedExpense.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!currentExpense) {
+      return res.status(404).json({
+        success: false,
+        message: "Detailed expense not found",
+      });
+    }
+
+    const updates: Partial<DetailedExpense> = req.body;
+    if (updates.amount !== undefined && toFiniteNumber(updates.amount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be greater than zero",
+      });
+    }
+
+    const updatedExpense = toDetailedExpense(
+      await prisma.detailedExpense.update({
+        where: { id: req.params.id },
+        data: {
+          ...(updates.date !== undefined && { date: updates.date }),
+          ...(updates.category !== undefined && { category: updates.category }),
+          ...(updates.description !== undefined && { description: updates.description }),
+          ...(updates.amount !== undefined && { amount: Number(updates.amount) }),
+          ...(updates.vendor !== undefined && { vendor: updates.vendor || "" }),
+          ...(updates.paymentMethod !== undefined && { paymentMethod: updates.paymentMethod || "" }),
+          ...(updates.status !== undefined && { status: normalizeExpenseStatus(updates.status) }),
+          ...(updates.recurring !== undefined && { recurring: Boolean(updates.recurring) }),
+        },
+      })
+    );
+
+    res.json({
+      success: true,
+      message: "Detailed expense updated successfully",
+      data: {
+        ...updatedExpense,
+        status: normalizeExpenseStatus(updatedExpense.status),
+      },
+    });
+  } catch (error) {
+    console.error("[FINANCE UPDATE_DETAILED_EXPENSE] ERROR:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error updating detailed expense",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const payDetailedExpense = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<DetailedExpense | null>>
+) => {
+  try {
+    const currentExpense = await prisma.detailedExpense.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!currentExpense) {
+      return res.status(404).json({
+        success: false,
+        message: "Detailed expense not found",
+      });
+    }
+
+    if (isCancelledExpense(currentExpense)) {
+      return res.status(400).json({
+        success: false,
+        message: "Cancelled expenses cannot be marked as paid",
+      });
+    }
+
+    const paymentMethod = String(req.body?.paymentMethod || currentExpense.paymentMethod || "cash").trim();
+    const updatedExpense = toDetailedExpense(
+      await prisma.detailedExpense.update({
+        where: { id: req.params.id },
+        data: {
+          status: "paid",
+          paymentMethod: paymentMethod || "cash",
+        },
+      })
+    );
+
+    res.json({
+      success: true,
+      message: "Detailed expense marked as paid",
+      data: {
+        ...updatedExpense,
+        status: normalizeExpenseStatus(updatedExpense.status),
+      },
+    });
+  } catch (error) {
+    console.error("[FINANCE PAY_DETAILED_EXPENSE] ERROR:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error marking detailed expense as paid",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
@@ -443,6 +631,7 @@ export const getRevenue = async (req: Request, res: Response<ApiResponse<Revenue
     }
 
     for (const expense of detailedExpenses) {
+      if (isCancelledExpense(expense)) continue;
       const date = normalizeDate(expense.date);
       if (!date) continue;
 
@@ -494,6 +683,7 @@ export const getExpenseBreakdown = async (
     const categoryTotals = new Map<string, number>();
 
     for (const expense of detailedExpenses) {
+      if (isCancelledExpense(expense)) continue;
       const category = String(expense.category || "Other").trim() || "Other";
       categoryTotals.set(category, (categoryTotals.get(category) || 0) + toFiniteNumber(expense.amount));
     }
@@ -539,7 +729,7 @@ export const getDetailedExpenses = async (
       amount: toFiniteNumber(expense.amount),
       vendor: expense.vendor || "",
       paymentMethod: expense.paymentMethod || "",
-      status: expense.status || "pending",
+      status: normalizeExpenseStatus(expense.status),
       recurring: Boolean(expense.recurring),
     }));
     res.json({
@@ -567,13 +757,15 @@ export const getRecurringExpenses = async (
       orderBy: { date: "asc" },
     });
 
-    const data = recurringExpenses.map((expense) => ({
-      category: expense.category || "Other",
-      description: expense.description,
-      amount: toFiniteNumber(expense.amount),
-      frequency: "Monthly",
-      nextDue: nextMonthlyDueDate(expense.date),
-    }));
+    const data = recurringExpenses
+      .filter((expense) => !isCancelledExpense(expense))
+      .map((expense) => ({
+        category: expense.category || "Other",
+        description: expense.description,
+        amount: toFiniteNumber(expense.amount),
+        frequency: "Monthly",
+        nextDue: nextMonthlyDueDate(expense.date),
+      }));
 
     res.json({ success: true, message: "Recurring expenses retrieved successfully", data });
   } catch (error) {
@@ -582,41 +774,186 @@ export const getRecurringExpenses = async (
   }
 };
 
+const buildPayrollData = async (payrollMonth: string) => {
+  const [activeStaff, staffFinancialRecords] = await Promise.all([
+    prisma.staff.findMany({ where: { deleted: false }, orderBy: { name: "asc" } }),
+    prisma.staffFinancialRecord.findMany(),
+  ]);
+
+  return activeStaff.map((staff) => {
+    const currentMonthRecords = staffFinancialRecords.filter(
+      (record) => record.staffId === staff.id && isRecordInPayrollMonth(record, payrollMonth)
+    );
+    const salaryRecord = currentMonthRecords.find(isSalaryRecord);
+    const bonus = currentMonthRecords
+      .filter((record) => {
+        const type = String(record.type || "").toLowerCase();
+        return type.includes("bonus") || type.includes("commission") || type.includes("overtime");
+      })
+      .reduce((sum, record) => sum + toFiniteNumber(record.amount), 0);
+    const baseSalary = toFiniteNumber(staff.baseSalary);
+
+    return {
+      id: staff.id,
+      name: staff.name,
+      role: staff.role,
+      baseSalary,
+      bonus,
+      total: baseSalary + bonus,
+      status: salaryRecord?.status || (baseSalary > 0 ? "pending" : "paid"),
+      salaryRecordId: salaryRecord?.id,
+      paymentDate: salaryRecord?.date,
+      month: payrollMonth,
+    };
+  });
+};
+
 export const getPayroll = async (req: Request, res: Response<ApiResponse<Payroll[]>>) => {
   try {
+    const payrollMonth = normalizePayrollMonth(req.query.month);
+    const data = await buildPayrollData(payrollMonth);
+    res.json({ success: true, message: "Payroll data retrieved successfully", data });
+  } catch (error) {
+    console.error("[FINANCE PAYROLL] Error fetching payroll data:", error);
+    res.status(500).json({ success: false, message: "Error fetching payroll data", error: error instanceof Error ? error.message : "Unknown error" });
+  }
+};
+
+export const processPayroll = async (
+  req: Request,
+  res: Response<ApiResponse<Payroll[]>>
+) => {
+  try {
+    const payrollMonth = normalizePayrollMonth(req.body?.month);
+    const payrollDate = `${payrollMonth}-01`;
     const [activeStaff, staffFinancialRecords] = await Promise.all([
       prisma.staff.findMany({ where: { deleted: false }, orderBy: { name: "asc" } }),
       prisma.staffFinancialRecord.findMany(),
     ]);
 
-    const data = activeStaff.map((staff) => {
-      const currentMonthRecords = staffFinancialRecords.filter(
-        (record) => record.staffId === staff.id && isCurrentMonth(record.date)
-      );
-      const bonus = currentMonthRecords
-        .filter((record) => {
-          const type = String(record.type || "").toLowerCase();
-          return type.includes("bonus") || type.includes("commission") || type.includes("overtime");
-        })
-        .reduce((sum, record) => sum + toFiniteNumber(record.amount), 0);
+    for (const staff of activeStaff) {
       const baseSalary = toFiniteNumber(staff.baseSalary);
-      const hasPendingRecord = currentMonthRecords.some((record) => record.status !== "paid");
+      if (baseSalary <= 0) continue;
 
-      return {
-        id: staff.id,
-        name: staff.name,
-        role: staff.role,
-        baseSalary,
-        bonus,
-        total: baseSalary + bonus,
-        status: hasPendingRecord || baseSalary > 0 ? "pending" : "paid",
-      };
+      const existingSalaryRecord = staffFinancialRecords.find(
+        (record) =>
+          record.staffId === staff.id &&
+          isRecordInPayrollMonth(record, payrollMonth) &&
+          isSalaryRecord(record)
+      );
+
+      if (existingSalaryRecord) {
+        if (existingSalaryRecord.status !== "paid" && toFiniteNumber(existingSalaryRecord.amount) !== baseSalary) {
+          await prisma.staffFinancialRecord.update({
+            where: { id: existingSalaryRecord.id },
+            data: { amount: baseSalary },
+          });
+        }
+        continue;
+      }
+
+      await prisma.staffFinancialRecord.create({
+        data: {
+          id: `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          staffId: staff.id,
+          staffName: staff.name,
+          type: "salary",
+          amount: baseSalary,
+          date: payrollDate,
+          status: "pending",
+          notes: `${monthLabel(payrollMonth)} salary`,
+          repaymentSchedule: "",
+        },
+      });
+    }
+
+    const data = await buildPayrollData(payrollMonth);
+    res.json({ success: true, message: "Payroll processed successfully", data });
+  } catch (error) {
+    console.error("[FINANCE PROCESS_PAYROLL] Error processing payroll:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error processing payroll",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const payPayrollEntry = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<Payroll | null>>
+) => {
+  try {
+    const staffId = req.params.id;
+    const payrollMonth = normalizePayrollMonth(req.body?.month);
+    const requestedPaymentDate = String(req.body?.paymentDate || "").trim();
+    const paymentDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedPaymentDate) && requestedPaymentDate.startsWith(`${payrollMonth}-`)
+      ? requestedPaymentDate
+      : `${payrollMonth}-01`;
+
+    const staff = await prisma.staff.findUnique({ where: { id: staffId } });
+    if (!staff || staff.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found",
+      });
+    }
+
+    const baseSalary = toFiniteNumber(staff.baseSalary);
+    if (baseSalary <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Staff member has no base salary to pay",
+      });
+    }
+
+    const existingSalaryRecord = await prisma.staffFinancialRecord.findFirst({
+      where: {
+        staffId,
+        date: { startsWith: `${payrollMonth}-` },
+        OR: [
+          { type: "salary" },
+          { type: "payroll" },
+          { type: "monthly_salary" },
+        ],
+      },
     });
 
-    res.json({ success: true, message: "Payroll data retrieved successfully", data });
+    if (existingSalaryRecord) {
+      await prisma.staffFinancialRecord.update({
+        where: { id: existingSalaryRecord.id },
+        data: {
+          amount: baseSalary,
+          date: paymentDate,
+          status: "paid",
+          notes: existingSalaryRecord.notes || `${monthLabel(payrollMonth)} salary`,
+        },
+      });
+    } else {
+      await prisma.staffFinancialRecord.create({
+        data: {
+          id: `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          staffId: staff.id,
+          staffName: staff.name,
+          type: "salary",
+          amount: baseSalary,
+          date: paymentDate,
+          status: "paid",
+          notes: `${monthLabel(payrollMonth)} salary`,
+          repaymentSchedule: "",
+        },
+      });
+    }
+
+    const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    res.json({ success: true, message: "Payroll entry paid successfully", data });
   } catch (error) {
-    console.error("[FINANCE PAYROLL] Error fetching payroll data:", error);
-    res.status(500).json({ success: false, message: "Error fetching payroll data", error: error instanceof Error ? error.message : "Unknown error" });
+    console.error("[FINANCE PAY_PAYROLL_ENTRY] Error paying payroll entry:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error paying payroll entry",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
   }
 };
 
@@ -762,16 +1099,18 @@ export const getRecentTransactions = async (
         !representedPaymentTransactions.some((represented) => isSamePaymentEvent(transaction, represented))
       );
 
-    const expenseTransactions = detailedExpenses.map((expense) => ({
-      id: expense.id,
-      date: expense.date,
-      description: expense.description,
-      amount: -Math.abs(toFiniteNumber(expense.amount)),
-      type: "expense",
-      method: normalizeMethod(expense.paymentMethod),
-      logDate: expense.date,
-      source: "expense",
-    }));
+    const expenseTransactions = detailedExpenses
+      .filter((expense) => !isCancelledExpense(expense))
+      .map((expense) => ({
+        id: expense.id,
+        date: expense.date,
+        description: expense.description,
+        amount: -Math.abs(toFiniteNumber(expense.amount)),
+        type: "expense",
+        method: normalizeMethod(expense.paymentMethod),
+        logDate: expense.date,
+        source: "expense",
+      }));
 
     const data = [...paymentTransactions, ...financeTransactions, ...appointmentLogTransactions, ...expenseTransactions]
       .sort((a, b) => {

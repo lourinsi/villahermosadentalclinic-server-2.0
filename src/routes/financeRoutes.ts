@@ -9,8 +9,12 @@ import {
   getExpenseBreakdown,
   getDetailedExpenses,
   createDetailedExpense,
+  updateDetailedExpense,
+  payDetailedExpense,
   getRecurringExpenses,
   getPayroll,
+  processPayroll,
+  payPayrollEntry,
   getRecentTransactions,
 } from "../controllers/financeController";
 import { requireAuth } from "../middleware/authMiddleware";
@@ -38,8 +42,23 @@ router.get("/detailed-expenses", getDetailedExpenses);
 // POST - Add new detailed expense
 router.post("/detailed-expenses", createDetailedExpense);
 
+// PUT - Update detailed expense
+router.put("/detailed-expenses/:id", updateDetailedExpense);
+
+// PATCH - Update detailed expense
+router.patch("/detailed-expenses/:id", updateDetailedExpense);
+
+// POST - Mark a detailed expense paid
+router.post("/detailed-expenses/:id/pay", payDetailedExpense);
+
 // GET - Get recurring expenses - MORE SPECIFIC ROUTE FIRST
 router.get("/recurring-expenses", getRecurringExpenses);
+
+// POST - Create missing monthly payroll records
+router.post("/payroll/process", processPayroll);
+
+// POST - Mark a staff member's payroll entry paid
+router.post("/payroll/:id/pay", payPayrollEntry);
 
 // GET - Get payroll data - MORE SPECIFIC ROUTE FIRST
 router.get("/payroll", getPayroll);
