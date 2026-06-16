@@ -14,6 +14,8 @@ import {
   getRecurringExpenses,
   getPayroll,
   processPayroll,
+  addPayrollBonus,
+  configurePayrollEntry,
   payPayrollEntry,
   getRecentTransactions,
 } from "../controllers/financeController";
@@ -56,6 +58,12 @@ router.get("/recurring-expenses", getRecurringExpenses);
 
 // POST - Create missing monthly payroll records
 router.post("/payroll/process", processPayroll);
+
+// POST - Add a staff bonus for the selected payroll month
+router.post("/payroll/:id/bonus", addPayrollBonus);
+
+// PUT - Configure a staff member's payroll salary and monthly adjustment
+router.put("/payroll/:id/configure", configurePayrollEntry);
 
 // POST - Mark a staff member's payroll entry paid
 router.post("/payroll/:id/pay", payPayrollEntry);

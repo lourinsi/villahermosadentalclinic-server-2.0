@@ -1,6 +1,6 @@
 #!/usr/bin/env ts-node
 // Seed the database with stable demo data for the Villahermosa Dental Clinic app.
-// Run with: npm run seed
+// Run with: npm run seed, or a segmented command such as npm run seed:patients.
 
 import "dotenv/config";
 import bcrypt from "bcryptjs";
@@ -52,11 +52,40 @@ const createRecords = async (model: SeedModel, records: any[]) => {
 };
 
 const resetSeedData = async () => {
-  await prisma.paymentLog.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
-  await prisma.appointmentLog.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
-  await prisma.payment.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
+  await prisma.paymentLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { appointmentId: { startsWith: `${SEED_PREFIX}appt_` } },
+      ],
+    },
+  });
+  await prisma.appointmentLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { appointmentId: { startsWith: `${SEED_PREFIX}appt_` } },
+      ],
+    },
+  });
+  await prisma.payment.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}payment_` } },
+        { appointmentId: { startsWith: `${SEED_PREFIX}appt_` } },
+        { patientId: { startsWith: `${SEED_PREFIX}patient_` } },
+      ],
+    },
+  });
   await prisma.financeRecord.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
-  await prisma.notification.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
+  await prisma.notification.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { userId: { startsWith: SEED_PREFIX } },
+      ],
+    },
+  });
   await prisma.questionnaire.deleteMany({
     where: { patientId: { startsWith: SEED_PREFIX } },
   });
@@ -65,6 +94,7 @@ const resetSeedData = async () => {
       OR: [
         { id: { startsWith: SEED_PREFIX } },
         { patientId: { startsWith: SEED_PREFIX } },
+        { doctorId: { startsWith: `${SEED_PREFIX}staff_` } },
       ],
     },
   });
@@ -180,27 +210,7 @@ const appointmentSnapshot = (appointment: any): JsonRecord => ({
   totalPaid: appointment.totalPaid || 0,
 });
 
-async function main() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is not set. Add it to villahermosadentalclinic-server/.env first.");
-  }
-
-  console.log("Resetting existing seeded rows...");
-  await resetSeedData();
-
-  console.log("Writing status configuration...");
-  await prisma.statusConfig.upsert({
-    where: { key: "appointment" },
-    update: { value: APPOINTMENT_STATUSES as any },
-    create: { key: "appointment", value: APPOINTMENT_STATUSES as any },
-  });
-
-  await prisma.statusConfig.upsert({
-    where: { key: "payment" },
-    update: { value: PAYMENT_STATUSES as any },
-    create: { key: "payment", value: PAYMENT_STATUSES as any },
-  });
-
+async function buildSeedData() {
   const patientPasswordHash = await bcrypt.hash("villahermosa123", 10);
   const doctorPasswordHash = await bcrypt.hash("doctor123", 10);
   const testDoctorPasswordHash = await bcrypt.hash("password", 10);
@@ -1298,39 +1308,295 @@ async function main() {
     },
   ];
 
+  return {
+    paymentMethods,
+    staff,
+    patients,
+    appointments,
+    appointmentLogs,
+    payments,
+    financeRecords,
+    detailedExpenses,
+    inventory,
+    staffAttendance,
+    staffFinancialRecords,
+    notifications,
+    questionnaires,
+  };
+}
+
+type SeedData = Awaited<ReturnType<typeof buildSeedData>>;
+
+const unique = (values: Array<string | null | undefined>): string[] => [
+  ...new Set(values.filter((value): value is string => Boolean(value))),
+];
+
+const recordIds = (records: Array<{ id: string }>): string[] => records.map((record) => record.id);
+
+const appointmentFinanceRecords = (data: SeedData) =>
+  data.financeRecords.filter((record) => record.type === "payment");
+
+const standaloneFinanceRecords = (data: SeedData) =>
+  data.financeRecords.filter((record) => record.type !== "payment");
+
+const appointmentNotifications = (data: SeedData) =>
+  data.notifications.filter((notification) => notification.type === "appointment");
+
+const inventoryNotifications = (data: SeedData) =>
+  data.notifications.filter((notification) => notification.type === "inventory");
+
+const deleteByIds = async (model: any, ids: string[]) => {
+  if (ids.length === 0) return;
+  await model.deleteMany({ where: { id: { in: ids } } });
+};
+
+const existingIds = async (model: any, ids: string[]): Promise<Set<string>> => {
+  if (ids.length === 0) return new Set();
+  const rows = await model.findMany({
+    where: { id: { in: ids } },
+    select: { id: true },
+  });
+  return new Set(rows.map((row: { id: string }) => row.id));
+};
+
+const assertSeedRowsExist = async (label: string, model: any, ids: string[]) => {
+  const requiredIds = unique(ids);
+  const foundIds = await existingIds(model, requiredIds);
+  const missingIds = requiredIds.filter((id) => !foundIds.has(id));
+
+  if (missingIds.length > 0) {
+    throw new Error(
+      `Cannot seed this segment because seeded ${label} are missing: ${missingIds.join(", ")}. ` +
+        `Run the required seed command first, or run npm run seed to restore everything.`
+    );
+  }
+};
+
+const writeStatusConfiguration = async () => {
+  console.log("Writing status configuration...");
+  await prisma.statusConfig.upsert({
+    where: { key: "appointment" },
+    update: { value: APPOINTMENT_STATUSES as any },
+    create: { key: "appointment", value: APPOINTMENT_STATUSES as any },
+  });
+
+  await prisma.statusConfig.upsert({
+    where: { key: "payment" },
+    update: { value: PAYMENT_STATUSES as any },
+    create: { key: "payment", value: PAYMENT_STATUSES as any },
+  });
+};
+
+const deleteAppointmentSeed = async (data: SeedData) => {
+  const appointmentIds = recordIds(data.appointments);
+  const appointmentNotificationIds = recordIds(appointmentNotifications(data));
+
+  await prisma.paymentLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { appointmentId: { startsWith: `${SEED_PREFIX}appt_` } },
+        { appointmentId: { in: appointmentIds } },
+      ],
+    },
+  });
+  await prisma.appointmentLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { appointmentId: { startsWith: `${SEED_PREFIX}appt_` } },
+        { appointmentId: { in: appointmentIds } },
+      ],
+    },
+  });
+  await prisma.payment.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}payment_` } },
+        { appointmentId: { startsWith: `${SEED_PREFIX}appt_` } },
+        { appointmentId: { in: appointmentIds } },
+        { patientId: { startsWith: `${SEED_PREFIX}patient_` } },
+      ],
+    },
+  });
+  await prisma.financeRecord.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}finance_payment_` } },
+        { id: { in: recordIds(appointmentFinanceRecords(data)) } },
+      ],
+    },
+  });
+  await deleteByIds(prisma.notification, appointmentNotificationIds);
+  await prisma.appointment.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}appt_` } },
+        { patientId: { startsWith: `${SEED_PREFIX}patient_` } },
+        { doctorId: { startsWith: `${SEED_PREFIX}staff_` } },
+      ],
+    },
+  });
+};
+
+const deletePatientSeedRows = async () => {
+  await prisma.questionnaire.deleteMany({
+    where: { patientId: { startsWith: `${SEED_PREFIX}patient_` } },
+  });
+  await prisma.patient.deleteMany({ where: { id: { startsWith: `${SEED_PREFIX}patient_` } } });
+};
+
+const deletePatientSeed = async (data: SeedData) => {
+  await deleteAppointmentSeed(data);
+  await prisma.financeRecord.deleteMany({
+    where: { patientId: { startsWith: `${SEED_PREFIX}patient_` } },
+  });
+  await prisma.notification.deleteMany({
+    where: { userId: { startsWith: `${SEED_PREFIX}patient_` } },
+  });
+  await deletePatientSeedRows();
+};
+
+const deleteDoctorSeedRows = async () => {
+  await prisma.staffFinancialRecord.deleteMany({
+    where: { id: { startsWith: `${SEED_PREFIX}staff_finance_` } },
+  });
+  await prisma.staffAttendance.deleteMany({
+    where: { id: { startsWith: `${SEED_PREFIX}attendance_` } },
+  });
+  await prisma.staff.deleteMany({ where: { id: { startsWith: `${SEED_PREFIX}staff_` } } });
+};
+
+const deleteDoctorSeed = async (data: SeedData) => {
+  await deleteAppointmentSeed(data);
+  await prisma.notification.deleteMany({
+    where: { userId: { startsWith: `${SEED_PREFIX}staff_` } },
+  });
+  await deleteDoctorSeedRows();
+};
+
+const deleteInventorySeed = async (data: SeedData) => {
+  await deleteByIds(prisma.notification, recordIds(inventoryNotifications(data)));
+  await prisma.inventoryItem.deleteMany({
+    where: { id: { startsWith: `${SEED_PREFIX}inventory_` } },
+  });
+};
+
+const deleteStandaloneFinanceSeed = async (data: SeedData) => {
+  await deleteByIds(prisma.financeRecord, recordIds(standaloneFinanceRecords(data)));
+  await prisma.detailedExpense.deleteMany({
+    where: { id: { startsWith: `${SEED_PREFIX}expense_` } },
+  });
+};
+
+const deletePaymentMethodSeed = async () => {
+  await prisma.paymentMethod.deleteMany({
+    where: { id: { startsWith: `${SEED_PREFIX}payment_` } },
+  });
+};
+
+const assertAppointmentDependencies = async (data: SeedData) => {
+  await assertSeedRowsExist(
+    "patients",
+    prisma.patient,
+    unique(data.appointments.map((appointment) => appointment.patientId))
+  );
+  await assertSeedRowsExist(
+    "doctors",
+    prisma.staff,
+    unique(data.appointments.map((appointment) => appointment.doctorId))
+  );
+};
+
+const assertFinanceDependencies = async (data: SeedData) => {
+  await assertSeedRowsExist(
+    "patients",
+    prisma.patient,
+    unique(standaloneFinanceRecords(data).map((record) => record.patientId))
+  );
+  await assertSeedRowsExist("appointments", prisma.appointment, recordIds(data.appointments));
+};
+
+const createPaymentMethodSeed = async (data: SeedData) => {
   console.log("Creating payment methods...");
-  await createRecords(prisma.paymentMethod, paymentMethods);
+  await createRecords(prisma.paymentMethod, data.paymentMethods);
+};
 
-  console.log("Creating staff...");
-  await createRecords(prisma.staff, staff);
+const createDoctorSeed = async (data: SeedData) => {
+  console.log("Creating doctors and clinic staff...");
+  await createRecords(prisma.staff, data.staff);
+  await createRecords(prisma.staffAttendance, data.staffAttendance);
+  await createRecords(prisma.staffFinancialRecord, data.staffFinancialRecords);
+};
 
-  console.log("Creating patients...");
-  await createRecords(prisma.patient, patients);
+const createPatientSeed = async (data: SeedData) => {
+  console.log("Creating patients and questionnaires...");
+  await createRecords(prisma.patient, data.patients);
+  await createRecords(prisma.questionnaire, data.questionnaires);
+};
 
-  console.log("Creating appointments and logs...");
-  await createRecords(prisma.appointment, appointments);
-  await createRecords(prisma.appointmentLog, appointmentLogs);
+const createAppointmentSeed = async (data: SeedData) => {
+  console.log("Creating appointments, logs, payments, finance records, and notifications...");
+  await createRecords(prisma.appointment, data.appointments);
+  await createRecords(prisma.appointmentLog, data.appointmentLogs);
+  await createRecords(prisma.payment, data.payments);
+  await createRecords(prisma.financeRecord, appointmentFinanceRecords(data));
+  await createRecords(prisma.notification, appointmentNotifications(data));
+};
 
-  console.log("Creating payments...");
-  await createRecords(prisma.payment, payments);
+const createInventorySeed = async (data: SeedData) => {
+  console.log("Creating inventory and inventory notifications...");
+  await createRecords(prisma.inventoryItem, data.inventory);
+  await createRecords(prisma.notification, inventoryNotifications(data));
+};
 
-  console.log("Creating finance, inventory, and staff records...");
-  await createRecords(prisma.financeRecord, financeRecords);
-  await createRecords(prisma.detailedExpense, detailedExpenses);
-  await createRecords(prisma.inventoryItem, inventory);
-  await createRecords(prisma.staffAttendance, staffAttendance);
-  await createRecords(prisma.staffFinancialRecord, staffFinancialRecords);
+const createStandaloneFinanceSeed = async (data: SeedData) => {
+  console.log("Creating standalone finance records and expenses...");
+  await createRecords(prisma.financeRecord, standaloneFinanceRecords(data));
+  await createRecords(prisma.detailedExpense, data.detailedExpenses);
+};
 
-  console.log("Creating notifications and questionnaires...");
-  await createRecords(prisma.notification, notifications);
-  await createRecords(prisma.questionnaire, questionnaires);
+const seedPaymentMethods = async (data: SeedData) => {
+  await deletePaymentMethodSeed();
+  await createPaymentMethodSeed(data);
+};
 
+const seedDoctors = async (data: SeedData) => {
+  await deleteDoctorSeedRows();
+  await createDoctorSeed(data);
+};
+
+const seedPatients = async (data: SeedData) => {
+  await deletePatientSeedRows();
+  await createPatientSeed(data);
+};
+
+const seedAppointments = async (data: SeedData) => {
+  await assertAppointmentDependencies(data);
+  await writeStatusConfiguration();
+  await seedPaymentMethods(data);
+  await deleteAppointmentSeed(data);
+  await createAppointmentSeed(data);
+};
+
+const seedInventory = async (data: SeedData) => {
+  await deleteInventorySeed(data);
+  await createInventorySeed(data);
+};
+
+const seedFinance = async (data: SeedData) => {
+  await assertFinanceDependencies(data);
+  await deleteStandaloneFinanceSeed(data);
+  await createStandaloneFinanceSeed(data);
+};
+
+const printSeedSummary = (data: SeedData) => {
   console.log("");
   console.log("Seed complete.");
-  console.log(`Patients: ${patients.length}`);
-  console.log(`Staff: ${staff.length}`);
-  console.log(`Appointments: ${appointments.length}`);
-  console.log(`Payments: ${payments.length}`);
+  console.log(`Patients: ${data.patients.length}`);
+  console.log(`Staff: ${data.staff.length}`);
+  console.log(`Appointments: ${data.appointments.length}`);
+  console.log(`Payments: ${data.payments.length}`);
   console.log("");
   console.log("Useful demo logins:");
   console.log("Admin: admin / password");
@@ -1338,6 +1604,126 @@ async function main() {
   console.log("Doctor email login: maria.villahermosa@example.com / doctor123");
   console.log("Receptionist login: carlo.mendoza@example.com / password");
   console.log("Test Patient login: test@patient.com / villahermosa123");
+};
+
+const seedAll = async (data: SeedData) => {
+  console.log("Resetting existing seeded rows...");
+  await resetSeedData();
+  await writeStatusConfiguration();
+  await createPaymentMethodSeed(data);
+  await createDoctorSeed(data);
+  await createPatientSeed(data);
+  await createAppointmentSeed(data);
+  await createInventorySeed(data);
+  await createStandaloneFinanceSeed(data);
+  printSeedSummary(data);
+};
+
+const seedCommandDescriptions = [
+  ["npm run seed", "Seeds everything in dependency order."],
+  ["npm run seed:patients", "Restores seeded patients and questionnaires."],
+  ["npm run seed:doctors", "Restores seeded doctors, staff, attendance, and staff finance rows."],
+  ["npm run seed:staff", "Alias for seed:doctors."],
+  ["npm run seed:appointments", "Restores appointments plus logs, payments, payment finance rows, and notifications. Requires seeded patients and doctors."],
+  ["npm run seed:inventory", "Restores seeded inventory items and inventory notifications."],
+  ["npm run seed:finance", "Restores standalone finance records and detailed expenses. Requires seeded patients and appointments."],
+  ["npm run seed:payment-methods", "Restores seeded payment methods."],
+] as const;
+
+const deleteCommandDescriptions = [
+  ["npm run delete:all", "Deletes all rows managed by the seeder."],
+  ["npm run delete:patients", "Deletes seeded patients and dependent seeded appointments."],
+  ["npm run delete:doctors", "Deletes seeded doctors/staff and dependent seeded appointments."],
+  ["npm run delete:staff", "Alias for delete:doctors."],
+  ["npm run delete:appointments", "Deletes seeded appointments plus logs, payments, payment finance rows, and notifications."],
+  ["npm run delete:inventory", "Deletes seeded inventory items and inventory notifications."],
+  ["npm run delete:finance", "Deletes standalone seeded finance records and detailed expenses."],
+  ["npm run delete:payment-methods", "Deletes seeded payment methods."],
+] as const;
+
+const printCommandList = () => {
+  console.log("Available seeder commands:");
+  console.log("");
+  console.log("Seed commands:");
+  for (const [command, description] of seedCommandDescriptions) {
+    console.log(`  ${command.padEnd(31)} ${description}`);
+  }
+  console.log("");
+  console.log("Delete commands:");
+  for (const [command, description] of deleteCommandDescriptions) {
+    console.log(`  ${command.padEnd(31)} ${description}`);
+  }
+};
+
+const printUsage = () => {
+  console.log("Usage: ts-node src/seeder.ts [command]");
+  console.log("");
+  printCommandList();
+};
+
+async function main() {
+  const command = process.argv[2] || "seed:all";
+  if (command === "seed:list" || command === "list" || command === "help" || command === "--help" || command === "-h") {
+    printUsage();
+    return;
+  }
+
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is not set. Add it to villahermosadentalclinic-server/.env first.");
+  }
+
+  const data = await buildSeedData();
+
+  switch (command) {
+    case "seed:all":
+      await seedAll(data);
+      break;
+    case "seed:payment-methods":
+      await seedPaymentMethods(data);
+      break;
+    case "seed:doctors":
+    case "seed:staff":
+      await seedDoctors(data);
+      break;
+    case "seed:patients":
+      await seedPatients(data);
+      break;
+    case "seed:appointments":
+      await seedAppointments(data);
+      break;
+    case "seed:inventory":
+      await seedInventory(data);
+      break;
+    case "seed:finance":
+      await seedFinance(data);
+      break;
+    case "delete:all":
+      console.log("Deleting all seeded rows...");
+      await resetSeedData();
+      break;
+    case "delete:payment-methods":
+      await deletePaymentMethodSeed();
+      break;
+    case "delete:doctors":
+    case "delete:staff":
+      await deleteDoctorSeed(data);
+      break;
+    case "delete:patients":
+      await deletePatientSeed(data);
+      break;
+    case "delete:appointments":
+      await deleteAppointmentSeed(data);
+      break;
+    case "delete:inventory":
+      await deleteInventorySeed(data);
+      break;
+    case "delete:finance":
+      await deleteStandaloneFinanceSeed(data);
+      break;
+    default:
+      printUsage();
+      throw new Error(`Unknown seed command: ${command}`);
+  }
 }
 
 main()

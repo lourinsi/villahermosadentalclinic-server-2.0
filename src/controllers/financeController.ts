@@ -102,9 +102,29 @@ const isCancelledExpense = (expense: { status?: string | null }) =>
   normalizeExpenseStatus(expense.status) === "cancelled";
 
 const SALARY_RECORD_TYPES = new Set(["salary", "payroll", "monthlysalary"]);
+const MANAGED_PAYROLL_ADJUSTMENT_TYPE = "payroll_adjustment";
+const PAYROLL_ADJUSTMENT_TYPES = new Set([
+  "bonus",
+  "commission",
+  "overtime",
+  "allowance",
+  "deduction",
+  "salaryadjustment",
+  "salaryreduction",
+  "payrolladjustment",
+]);
 
 const isSalaryRecord = (record: { type?: string | null }) =>
   SALARY_RECORD_TYPES.has(normalizeCodeValue(record.type));
+
+const isManagedPayrollAdjustmentRecord = (record: { type?: string | null }) =>
+  normalizeCodeValue(record.type) === normalizeCodeValue(MANAGED_PAYROLL_ADJUSTMENT_TYPE);
+
+const isPayrollAdjustmentRecord = (record: { type?: string | null; status?: string | null }) => {
+  const normalizedStatus = normalizeCodeValue(record.status);
+  if (["cancelled", "canceled", "void", "voided"].includes(normalizedStatus)) return false;
+  return PAYROLL_ADJUSTMENT_TYPES.has(normalizeCodeValue(record.type));
+};
 
 const normalizePayrollMonth = (value?: unknown) => {
   const text = String(value || "").trim();
@@ -113,6 +133,16 @@ const normalizePayrollMonth = (value?: unknown) => {
 
 const isRecordInPayrollMonth = (record: { date?: string | null }, payrollMonth: string) =>
   String(record.date || "").startsWith(`${payrollMonth}-`);
+
+const resolvePayrollDate = (value: unknown, payrollMonth: string) => {
+  const requestedDate = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) && requestedDate.startsWith(`${payrollMonth}-`)
+    ? requestedDate
+    : `${payrollMonth}-01`;
+};
+
+const createStaffFinancialRecordId = () =>
+  `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
 const extractPaymentId = (description?: string | null) => {
   const match = String(description || "").match(/\bPayment\s+(pay_[A-Za-z0-9_-]+)/i);
@@ -292,6 +322,8 @@ export const createDetailedExpense = async (
       paymentMethod: expenseData.paymentMethod || "",
       status: normalizeExpenseStatus(expenseData.status),
       recurring: Boolean(expenseData.recurring),
+      inventoryItemId: inventoryItemId || null,
+      inventoryQuantity: inventoryItemId ? inventoryQuantity : null,
     };
 
     const newExpense = toDetailedExpense(
@@ -377,20 +409,100 @@ export const updateDetailedExpense = async (
       });
     }
 
+    const inventoryItemId = String(updates.inventoryItemId || "").trim();
+    const inventoryQuantity = toFiniteNumber(updates.inventoryQuantity);
+    const hasInventoryLinkUpdate =
+      Object.prototype.hasOwnProperty.call(updates, "inventoryItemId") ||
+      Object.prototype.hasOwnProperty.call(updates, "inventoryQuantity");
+    const previousInventoryItemId = String(currentExpense.inventoryItemId || "").trim();
+    const previousInventoryQuantity = toFiniteNumber(currentExpense.inventoryQuantity);
+    const nextInventoryItemId = hasInventoryLinkUpdate ? inventoryItemId : previousInventoryItemId;
+    const nextInventoryQuantity = hasInventoryLinkUpdate ? inventoryQuantity : previousInventoryQuantity;
+    const nextExpenseStatus = normalizeExpenseStatus(updates.status ?? currentExpense.status);
+
+    if (nextInventoryItemId && nextInventoryQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Inventory quantity must be greater than zero when linking stock",
+      });
+    }
+
+    if (nextInventoryItemId && nextExpenseStatus === "cancelled") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked stock expenses must be pending or paid",
+      });
+    }
+
+    const expenseUpdateData = {
+      ...(updates.date !== undefined && { date: updates.date }),
+      ...(updates.category !== undefined && { category: updates.category }),
+      ...(updates.description !== undefined && { description: updates.description }),
+      ...(updates.amount !== undefined && { amount: Number(updates.amount) }),
+      ...(updates.vendor !== undefined && { vendor: updates.vendor || "" }),
+      ...(updates.paymentMethod !== undefined && { paymentMethod: updates.paymentMethod || "" }),
+      ...(updates.status !== undefined && { status: nextExpenseStatus }),
+      ...(updates.recurring !== undefined && { recurring: Boolean(updates.recurring) }),
+      ...(hasInventoryLinkUpdate && {
+        inventoryItemId: nextInventoryItemId || null,
+        inventoryQuantity: nextInventoryItemId ? nextInventoryQuantity : null,
+      }),
+    };
+
     const updatedExpense = toDetailedExpense(
-      await prisma.detailedExpense.update({
-        where: { id: req.params.id },
-        data: {
-          ...(updates.date !== undefined && { date: updates.date }),
-          ...(updates.category !== undefined && { category: updates.category }),
-          ...(updates.description !== undefined && { description: updates.description }),
-          ...(updates.amount !== undefined && { amount: Number(updates.amount) }),
-          ...(updates.vendor !== undefined && { vendor: updates.vendor || "" }),
-          ...(updates.paymentMethod !== undefined && { paymentMethod: updates.paymentMethod || "" }),
-          ...(updates.status !== undefined && { status: normalizeExpenseStatus(updates.status) }),
-          ...(updates.recurring !== undefined && { recurring: Boolean(updates.recurring) }),
-        },
-      })
+      hasInventoryLinkUpdate
+        ? await prisma.$transaction(async (tx) => {
+            const updatedExpenseRecord = await tx.detailedExpense.update({
+              where: { id: req.params.id },
+              data: expenseUpdateData,
+            });
+
+            const quantityChanges = new Map<string, number>();
+            if (previousInventoryItemId) {
+              quantityChanges.set(previousInventoryItemId, -previousInventoryQuantity);
+            }
+            if (nextInventoryItemId) {
+              quantityChanges.set(
+                nextInventoryItemId,
+                (quantityChanges.get(nextInventoryItemId) || 0) + nextInventoryQuantity
+              );
+            }
+
+            for (const [itemId, quantityChange] of quantityChanges.entries()) {
+              if (Math.abs(quantityChange) < 0.0001) continue;
+
+              const inventoryItem = await tx.inventoryItem.findUnique({
+                where: { id: itemId },
+              });
+
+              if (!inventoryItem || inventoryItem.deleted) {
+                throw new Error("Linked inventory item not found");
+              }
+
+              const currentQuantity = toFiniteNumber(inventoryItem.quantity);
+              const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
+              const updatedQuantity = currentQuantity + quantityChange;
+
+              if (updatedQuantity < 0) {
+                throw new Error("Linked inventory adjustment would make stock negative");
+              }
+
+              await tx.inventoryItem.update({
+                where: { id: itemId },
+                data: {
+                  quantity: updatedQuantity,
+                  totalValue: updatedQuantity * costPerUnit,
+                  updatedAt: new Date(),
+                },
+              });
+            }
+
+            return updatedExpenseRecord;
+          })
+        : await prisma.detailedExpense.update({
+            where: { id: req.params.id },
+            data: expenseUpdateData,
+          })
     );
 
     res.json({
@@ -403,6 +515,18 @@ export const updateDetailedExpense = async (
     });
   } catch (error) {
     console.error("[FINANCE UPDATE_DETAILED_EXPENSE] ERROR:", error);
+    if (error instanceof Error && error.message === "Linked inventory item not found") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked inventory item not found",
+      });
+    }
+    if (error instanceof Error && error.message === "Linked inventory adjustment would make stock negative") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked inventory adjustment would make stock negative",
+      });
+    }
     res.status(500).json({
       success: false,
       message: "Error updating detailed expense",
@@ -731,6 +855,8 @@ export const getDetailedExpenses = async (
       paymentMethod: expense.paymentMethod || "",
       status: normalizeExpenseStatus(expense.status),
       recurring: Boolean(expense.recurring),
+      inventoryItemId: expense.inventoryItemId || "",
+      inventoryQuantity: toFiniteNumber(expense.inventoryQuantity),
     }));
     res.json({
       success: true,
@@ -785,22 +911,24 @@ const buildPayrollData = async (payrollMonth: string) => {
       (record) => record.staffId === staff.id && isRecordInPayrollMonth(record, payrollMonth)
     );
     const salaryRecord = currentMonthRecords.find(isSalaryRecord);
+    const managedAdjustmentRecord = currentMonthRecords.find(isManagedPayrollAdjustmentRecord);
     const bonus = currentMonthRecords
-      .filter((record) => {
-        const type = String(record.type || "").toLowerCase();
-        return type.includes("bonus") || type.includes("commission") || type.includes("overtime");
-      })
+      .filter(isPayrollAdjustmentRecord)
       .reduce((sum, record) => sum + toFiniteNumber(record.amount), 0);
-    const baseSalary = toFiniteNumber(staff.baseSalary);
+    const staffBaseSalary = toFiniteNumber(staff.baseSalary);
+    const baseSalary = salaryRecord ? toFiniteNumber(salaryRecord.amount) : staffBaseSalary;
+    const total = baseSalary + bonus;
 
     return {
       id: staff.id,
       name: staff.name,
       role: staff.role,
       baseSalary,
+      staffBaseSalary,
       bonus,
-      total: baseSalary + bonus,
-      status: salaryRecord?.status || (baseSalary > 0 ? "pending" : "paid"),
+      managedAdjustment: managedAdjustmentRecord ? toFiniteNumber(managedAdjustmentRecord.amount) : 0,
+      total,
+      status: salaryRecord?.status || (baseSalary > 0 || Math.abs(bonus) > 0 ? "pending" : "paid"),
       salaryRecordId: salaryRecord?.id,
       paymentDate: salaryRecord?.date,
       month: payrollMonth,
@@ -825,7 +953,7 @@ export const processPayroll = async (
 ) => {
   try {
     const payrollMonth = normalizePayrollMonth(req.body?.month);
-    const payrollDate = `${payrollMonth}-01`;
+    const payrollDate = resolvePayrollDate(req.body?.paymentDate, payrollMonth);
     const [activeStaff, staffFinancialRecords] = await Promise.all([
       prisma.staff.findMany({ where: { deleted: false }, orderBy: { name: "asc" } }),
       prisma.staffFinancialRecord.findMany(),
@@ -833,8 +961,6 @@ export const processPayroll = async (
 
     for (const staff of activeStaff) {
       const baseSalary = toFiniteNumber(staff.baseSalary);
-      if (baseSalary <= 0) continue;
-
       const existingSalaryRecord = staffFinancialRecords.find(
         (record) =>
           record.staffId === staff.id &&
@@ -843,24 +969,28 @@ export const processPayroll = async (
       );
 
       if (existingSalaryRecord) {
-        if (existingSalaryRecord.status !== "paid" && toFiniteNumber(existingSalaryRecord.amount) !== baseSalary) {
-          await prisma.staffFinancialRecord.update({
-            where: { id: existingSalaryRecord.id },
-            data: { amount: baseSalary },
-          });
-        }
+        await prisma.staffFinancialRecord.update({
+          where: { id: existingSalaryRecord.id },
+          data: {
+            amount: toFiniteNumber(existingSalaryRecord.amount),
+            date: payrollDate,
+            staffName: staff.name,
+            status: "paid",
+            notes: existingSalaryRecord.notes || `${monthLabel(payrollMonth)} salary`,
+          },
+        });
         continue;
       }
 
       await prisma.staffFinancialRecord.create({
         data: {
-          id: `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          id: createStaffFinancialRecordId(),
           staffId: staff.id,
           staffName: staff.name,
           type: "salary",
           amount: baseSalary,
           date: payrollDate,
-          status: "pending",
+          status: "paid",
           notes: `${monthLabel(payrollMonth)} salary`,
           repaymentSchedule: "",
         },
@@ -886,10 +1016,7 @@ export const payPayrollEntry = async (
   try {
     const staffId = req.params.id;
     const payrollMonth = normalizePayrollMonth(req.body?.month);
-    const requestedPaymentDate = String(req.body?.paymentDate || "").trim();
-    const paymentDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedPaymentDate) && requestedPaymentDate.startsWith(`${payrollMonth}-`)
-      ? requestedPaymentDate
-      : `${payrollMonth}-01`;
+    const paymentDate = resolvePayrollDate(req.body?.paymentDate, payrollMonth);
 
     const staff = await prisma.staff.findUnique({ where: { id: staffId } });
     if (!staff || staff.deleted) {
@@ -900,13 +1027,6 @@ export const payPayrollEntry = async (
     }
 
     const baseSalary = toFiniteNumber(staff.baseSalary);
-    if (baseSalary <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Staff member has no base salary to pay",
-      });
-    }
-
     const existingSalaryRecord = await prisma.staffFinancialRecord.findFirst({
       where: {
         staffId,
@@ -923,7 +1043,7 @@ export const payPayrollEntry = async (
       await prisma.staffFinancialRecord.update({
         where: { id: existingSalaryRecord.id },
         data: {
-          amount: baseSalary,
+          amount: toFiniteNumber(existingSalaryRecord.amount),
           date: paymentDate,
           status: "paid",
           notes: existingSalaryRecord.notes || `${monthLabel(payrollMonth)} salary`,
@@ -932,7 +1052,7 @@ export const payPayrollEntry = async (
     } else {
       await prisma.staffFinancialRecord.create({
         data: {
-          id: `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          id: createStaffFinancialRecordId(),
           staffId: staff.id,
           staffName: staff.name,
           type: "salary",
@@ -952,6 +1072,193 @@ export const payPayrollEntry = async (
     res.status(500).json({
       success: false,
       message: "Error paying payroll entry",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const addPayrollBonus = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<Payroll | null>>
+) => {
+  try {
+    const staffId = req.params.id;
+    const payrollMonth = normalizePayrollMonth(req.body?.month);
+    const amount = toFiniteNumber(req.body?.amount);
+    const bonusDate = resolvePayrollDate(req.body?.date, payrollMonth);
+    const notes = String(req.body?.notes || "").trim();
+
+    if (amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Bonus amount must be greater than zero",
+      });
+    }
+
+    const staff = await prisma.staff.findUnique({ where: { id: staffId } });
+    if (!staff || staff.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found",
+      });
+    }
+
+    await prisma.staffFinancialRecord.create({
+      data: {
+        id: createStaffFinancialRecordId(),
+        staffId: staff.id,
+        staffName: staff.name,
+        type: "bonus",
+        amount,
+        date: bonusDate,
+        status: "approved",
+        notes: notes || `${monthLabel(payrollMonth)} bonus`,
+        repaymentSchedule: "",
+      },
+    });
+
+    const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    res.status(201).json({ success: true, message: "Payroll bonus added successfully", data });
+  } catch (error) {
+    console.error("[FINANCE ADD_PAYROLL_BONUS] Error adding payroll bonus:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error adding payroll bonus",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const configurePayrollEntry = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<Payroll | null>>
+) => {
+  try {
+    const staffId = req.params.id;
+    const payrollMonth = normalizePayrollMonth(req.body?.month);
+    const payrollDate = resolvePayrollDate(req.body?.date || req.body?.paymentDate, payrollMonth);
+    const hasBaseSalary = Object.prototype.hasOwnProperty.call(req.body || {}, "baseSalary");
+    const hasManagedAdjustment = Object.prototype.hasOwnProperty.call(req.body || {}, "managedAdjustment");
+    const adjustmentNotes = String(req.body?.adjustmentNotes || req.body?.notes || "").trim();
+    const salaryNotes = String(req.body?.salaryNotes || "").trim();
+
+    const staff = await prisma.staff.findUnique({ where: { id: staffId } });
+    if (!staff || staff.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found",
+      });
+    }
+
+    const nextBaseSalary = hasBaseSalary ? toFiniteNumber(req.body?.baseSalary) : toFiniteNumber(staff.baseSalary);
+    if (nextBaseSalary < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Base salary cannot be negative",
+      });
+    }
+
+    const nextManagedAdjustment = hasManagedAdjustment ? toFiniteNumber(req.body?.managedAdjustment) : undefined;
+
+    await prisma.$transaction(async (tx) => {
+      if (hasBaseSalary && Math.abs(nextBaseSalary - toFiniteNumber(staff.baseSalary)) > 0.009) {
+        await tx.staff.update({
+          where: { id: staff.id },
+          data: {
+            baseSalary: nextBaseSalary,
+            updatedAt: new Date(),
+          },
+        });
+      }
+
+      const existingSalaryRecord = await tx.staffFinancialRecord.findFirst({
+        where: {
+          staffId,
+          date: { startsWith: `${payrollMonth}-` },
+          OR: [
+            { type: "salary" },
+            { type: "payroll" },
+            { type: "monthly_salary" },
+          ],
+        },
+      });
+
+      if (existingSalaryRecord) {
+        await tx.staffFinancialRecord.update({
+          where: { id: existingSalaryRecord.id },
+          data: {
+            amount: nextBaseSalary,
+            staffName: staff.name,
+            notes: salaryNotes || existingSalaryRecord.notes || `${monthLabel(payrollMonth)} salary`,
+          },
+        });
+      } else {
+        await tx.staffFinancialRecord.create({
+          data: {
+            id: createStaffFinancialRecordId(),
+            staffId: staff.id,
+            staffName: staff.name,
+            type: "salary",
+            amount: nextBaseSalary,
+            date: payrollDate,
+            status: "pending",
+            notes: salaryNotes || `${monthLabel(payrollMonth)} salary`,
+            repaymentSchedule: "",
+          },
+        });
+      }
+
+      if (hasManagedAdjustment) {
+        const existingAdjustmentRecord = await tx.staffFinancialRecord.findFirst({
+          where: {
+            staffId,
+            date: { startsWith: `${payrollMonth}-` },
+            type: MANAGED_PAYROLL_ADJUSTMENT_TYPE,
+          },
+        });
+
+        if (nextManagedAdjustment !== undefined && Math.abs(nextManagedAdjustment) > 0.009) {
+          if (existingAdjustmentRecord) {
+            await tx.staffFinancialRecord.update({
+              where: { id: existingAdjustmentRecord.id },
+              data: {
+                amount: nextManagedAdjustment,
+                date: payrollDate,
+                staffName: staff.name,
+                status: "approved",
+                notes: adjustmentNotes || `${monthLabel(payrollMonth)} payroll adjustment`,
+              },
+            });
+          } else {
+            await tx.staffFinancialRecord.create({
+              data: {
+                id: createStaffFinancialRecordId(),
+                staffId: staff.id,
+                staffName: staff.name,
+                type: MANAGED_PAYROLL_ADJUSTMENT_TYPE,
+                amount: nextManagedAdjustment,
+                date: payrollDate,
+                status: "approved",
+                notes: adjustmentNotes || `${monthLabel(payrollMonth)} payroll adjustment`,
+                repaymentSchedule: "",
+              },
+            });
+          }
+        } else if (existingAdjustmentRecord) {
+          await tx.staffFinancialRecord.delete({
+            where: { id: existingAdjustmentRecord.id },
+          });
+        }
+      }
+    });
+
+    const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    res.json({ success: true, message: "Payroll entry configured successfully", data });
+  } catch (error) {
+    console.error("[FINANCE CONFIGURE_PAYROLL_ENTRY] Error configuring payroll entry:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error configuring payroll entry",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }

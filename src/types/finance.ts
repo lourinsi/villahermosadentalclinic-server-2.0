@@ -53,7 +53,9 @@ export interface Payroll {
   name: string;
   role: string;
   baseSalary: number;
+  staffBaseSalary?: number;
   bonus: number;
+  managedAdjustment?: number;
   total: number;
   status: string;
   salaryRecordId?: string;
