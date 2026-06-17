@@ -321,6 +321,63 @@ model InventoryItem {
   @@map("inventory")
 }
 
+model ExpenseLog {
+  id            String   @id
+  expenseId     String
+  previousState Json
+  newState      Json
+  changedBy     String
+  changedByName String?
+  changedByRole String?
+  changedAt     DateTime @default(now())
+  changeType    String
+  amount        Float?
+  notes         String?
+
+  @@index([expenseId])
+  @@index([changedAt])
+  @@map("expense_logs")
+}
+
+model InventoryLog {
+  id              String   @id
+  inventoryItemId String
+  previousState   Json
+  newState        Json
+  changedBy       String
+  changedByName   String?
+  changedByRole   String?
+  changedAt       DateTime @default(now())
+  changeType      String
+  quantityChange  Float?
+  notes           String?
+
+  @@index([inventoryItemId])
+  @@index([changedAt])
+  @@map("inventory_logs")
+}
+
+model PayrollLog {
+  id            String   @id
+  staffId       String
+  payrollMonth  String?
+  payrollRecordId String?
+  previousState Json
+  newState      Json
+  changedBy     String
+  changedByName String?
+  changedByRole String?
+  changedAt     DateTime @default(now())
+  changeType    String
+  amount        Float?
+  notes         String?
+
+  @@index([staffId])
+  @@index([payrollMonth])
+  @@index([changedAt])
+  @@map("payroll_logs")
+}
+
 model Questionnaire {
   patientId String    @id
   data      Json

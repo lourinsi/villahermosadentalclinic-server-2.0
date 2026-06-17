@@ -51,7 +51,107 @@ const createRecords = async (model: SeedModel, records: any[]) => {
   }
 };
 
+const requiredSeedSchema: Record<string, string[]> = {
+  detailed_expenses: [
+    "id",
+    "paymentDate",
+    "createdAt",
+    "inventoryItemId",
+    "inventoryQuantity",
+  ],
+  expense_logs: [
+    "id",
+    "expenseId",
+    "previousState",
+    "newState",
+    "changedBy",
+    "changedByName",
+    "changedByRole",
+    "changedAt",
+    "changeType",
+    "amount",
+    "notes",
+  ],
+  inventory_logs: [
+    "id",
+    "inventoryItemId",
+    "previousState",
+    "newState",
+    "changedBy",
+    "changedByName",
+    "changedByRole",
+    "changedAt",
+    "changeType",
+    "quantityChange",
+    "notes",
+  ],
+  payroll_logs: [
+    "id",
+    "staffId",
+    "payrollMonth",
+    "payrollRecordId",
+    "previousState",
+    "newState",
+    "changedBy",
+    "changedByName",
+    "changedByRole",
+    "changedAt",
+    "changeType",
+    "amount",
+    "notes",
+  ],
+};
+
+const assertRequiredSeedSchema = async () => {
+  const tableNames = Object.keys(requiredSeedSchema);
+  const quotedTableNames = tableNames.map((tableName) => `'${tableName}'`).join(", ");
+  const columns = await prisma.$queryRawUnsafe<Array<{ table_name: string; column_name: string }>>(
+    `SELECT table_name, column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name IN (${quotedTableNames})`
+  );
+  const existingColumns = new Set(columns.map((column) => `${column.table_name}.${column.column_name}`));
+  const missingColumns = tableNames.flatMap((tableName) =>
+    requiredSeedSchema[tableName]
+      .filter((columnName) => !existingColumns.has(`${tableName}.${columnName}`))
+      .map((columnName) => `${tableName}.${columnName}`)
+  );
+
+  if (missingColumns.length > 0) {
+    throw new Error(
+      `Database schema is missing columns required by the seeder: ${missingColumns.join(", ")}. ` +
+        "Run npm run prisma:migrate or npx prisma migrate deploy in villahermosadentalclinic-server, then rerun npm run seed."
+    );
+  }
+};
+
 const resetSeedData = async () => {
+  await prisma.expenseLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { expenseId: { startsWith: `${SEED_PREFIX}expense_` } },
+      ],
+    },
+  });
+  await prisma.inventoryLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { inventoryItemId: { startsWith: `${SEED_PREFIX}inventory_` } },
+      ],
+    },
+  });
+  await prisma.payrollLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: SEED_PREFIX } },
+        { staffId: { startsWith: `${SEED_PREFIX}staff_` } },
+        { payrollRecordId: { startsWith: `${SEED_PREFIX}staff_finance_` } },
+      ],
+    },
+  });
   await prisma.paymentLog.deleteMany({
     where: {
       OR: [
@@ -209,6 +309,58 @@ const appointmentSnapshot = (appointment: any): JsonRecord => ({
   balance: appointment.balance,
   totalPaid: appointment.totalPaid || 0,
 });
+
+const financeSeedActor = {
+  changedBy: `${SEED_PREFIX}staff_carlo`,
+  changedByName: "Carlo Mendoza",
+  changedByRole: "Receptionist",
+};
+
+const expenseSnapshot = (expense: any): JsonRecord => ({
+  id: expense.id,
+  date: expense.date,
+  category: expense.category,
+  description: expense.description,
+  amount: expense.amount,
+  vendor: expense.vendor || "",
+  paymentMethod: expense.paymentMethod || "",
+  paymentDate: expense.paymentDate || null,
+  status: expense.status || "pending",
+  recurring: Boolean(expense.recurring),
+  createdAt: expense.createdAt instanceof Date ? expense.createdAt.toISOString() : expense.createdAt || null,
+  inventoryItemId: expense.inventoryItemId || null,
+  inventoryQuantity: expense.inventoryQuantity || null,
+});
+
+const inventorySnapshot = (item: any): JsonRecord => ({
+  id: item.id,
+  item: item.item,
+  quantity: item.quantity,
+  unit: item.unit || "",
+  costPerUnit: item.costPerUnit || 0,
+  totalValue: item.totalValue || 0,
+  supplier: item.supplier || "",
+  lastOrdered: item.lastOrdered || "",
+  createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt || null,
+  updatedAt: item.updatedAt instanceof Date ? item.updatedAt.toISOString() : item.updatedAt || null,
+});
+
+const payrollRecordSnapshot = (record: any): JsonRecord => ({
+  id: record.id,
+  staffId: record.staffId,
+  staffName: record.staffName,
+  type: record.type,
+  amount: record.amount,
+  date: record.date,
+  status: record.status,
+  notes: record.notes || "",
+  repaymentSchedule: record.repaymentSchedule || "",
+});
+
+const payrollLogRecordTypes = new Set(["bonus", "commission", "overtime", "allowance", "deduction", "salary", "payroll"]);
+
+const shouldCreatePayrollLog = (record: any) =>
+  payrollLogRecordTypes.has(String(record.type || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
 
 async function buildSeedData() {
   const patientPasswordHash = await bcrypt.hash("villahermosa123", 10);
@@ -1072,8 +1224,10 @@ async function buildSeedData() {
       amount: 4200,
       vendor: "Leyte Dental Depot",
       paymentMethod: "Bank Transfer",
+      paymentDate: dateFromToday(-12),
       status: "paid",
       recurring: false,
+      createdAt: now,
     },
     {
       id: `${SEED_PREFIX}expense_rent`,
@@ -1083,8 +1237,10 @@ async function buildSeedData() {
       amount: 35000,
       vendor: "Villahermosa Commercial Center",
       paymentMethod: "Bank Transfer",
+      paymentDate: dateFromToday(-20),
       status: "paid",
       recurring: true,
+      createdAt: now,
     },
     {
       id: `${SEED_PREFIX}expense_lab`,
@@ -1094,10 +1250,28 @@ async function buildSeedData() {
       amount: 3200,
       vendor: "Ormoc Dental Lab",
       paymentMethod: "Cash",
+      paymentDate: dateFromToday(-3),
       status: "paid",
       recurring: false,
+      createdAt: now,
     },
   ];
+
+  const expenseLogs = detailedExpenses.map((expense, index) => ({
+    id: `${SEED_PREFIX}expense_log_${index + 1}_created`,
+    expenseId: expense.id,
+    previousState: {
+      status: "none",
+      amount: 0,
+      paymentStatus: "none",
+    },
+    newState: expenseSnapshot(expense),
+    ...financeSeedActor,
+    changedAt: expense.createdAt,
+    changeType: "created",
+    amount: expense.amount,
+    notes: "Seed expense creation log.",
+  }));
 
   const inventory = [
     {
@@ -1162,6 +1336,21 @@ async function buildSeedData() {
     },
   ];
 
+  const inventoryLogs = inventory.map((item, index) => ({
+    id: `${SEED_PREFIX}inventory_log_${index + 1}_created`,
+    inventoryItemId: item.id,
+    previousState: {
+      quantity: 0,
+      totalValue: 0,
+    },
+    newState: inventorySnapshot(item),
+    ...financeSeedActor,
+    changedAt: item.createdAt,
+    changeType: "created",
+    quantityChange: item.quantity,
+    notes: "Seed inventory creation log.",
+  }));
+
   const staffAttendance = staff.flatMap((member) => [
     {
       id: `${SEED_PREFIX}attendance_${member.id}_current`,
@@ -1222,6 +1411,25 @@ async function buildSeedData() {
       repaymentSchedule: null,
     },
   ];
+
+  const payrollLogs = staffFinancialRecords
+    .filter(shouldCreatePayrollLog)
+    .map((record, index) => ({
+      id: `${SEED_PREFIX}payroll_log_${index + 1}_created`,
+      staffId: record.staffId,
+      payrollMonth: record.date.slice(0, 7),
+      payrollRecordId: record.id,
+      previousState: {
+        status: "none",
+        amount: 0,
+      },
+      newState: payrollRecordSnapshot(record),
+      ...financeSeedActor,
+      changedAt: now,
+      changeType: "created",
+      amount: record.amount,
+      notes: "Seed payroll record creation log.",
+    }));
 
   const notifications = [
     {
@@ -1317,9 +1525,12 @@ async function buildSeedData() {
     payments,
     financeRecords,
     detailedExpenses,
+    expenseLogs,
     inventory,
+    inventoryLogs,
     staffAttendance,
     staffFinancialRecords,
+    payrollLogs,
     notifications,
     questionnaires,
   };
@@ -1458,6 +1669,15 @@ const deletePatientSeed = async (data: SeedData) => {
 };
 
 const deleteDoctorSeedRows = async () => {
+  await prisma.payrollLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}payroll_log_` } },
+        { staffId: { startsWith: `${SEED_PREFIX}staff_` } },
+        { payrollRecordId: { startsWith: `${SEED_PREFIX}staff_finance_` } },
+      ],
+    },
+  });
   await prisma.staffFinancialRecord.deleteMany({
     where: { id: { startsWith: `${SEED_PREFIX}staff_finance_` } },
   });
@@ -1477,6 +1697,14 @@ const deleteDoctorSeed = async (data: SeedData) => {
 
 const deleteInventorySeed = async (data: SeedData) => {
   await deleteByIds(prisma.notification, recordIds(inventoryNotifications(data)));
+  await prisma.inventoryLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}inventory_log_` } },
+        { inventoryItemId: { startsWith: `${SEED_PREFIX}inventory_` } },
+      ],
+    },
+  });
   await prisma.inventoryItem.deleteMany({
     where: { id: { startsWith: `${SEED_PREFIX}inventory_` } },
   });
@@ -1484,6 +1712,14 @@ const deleteInventorySeed = async (data: SeedData) => {
 
 const deleteStandaloneFinanceSeed = async (data: SeedData) => {
   await deleteByIds(prisma.financeRecord, recordIds(standaloneFinanceRecords(data)));
+  await prisma.expenseLog.deleteMany({
+    where: {
+      OR: [
+        { id: { startsWith: `${SEED_PREFIX}expense_log_` } },
+        { expenseId: { startsWith: `${SEED_PREFIX}expense_` } },
+      ],
+    },
+  });
   await prisma.detailedExpense.deleteMany({
     where: { id: { startsWith: `${SEED_PREFIX}expense_` } },
   });
@@ -1527,6 +1763,7 @@ const createDoctorSeed = async (data: SeedData) => {
   await createRecords(prisma.staff, data.staff);
   await createRecords(prisma.staffAttendance, data.staffAttendance);
   await createRecords(prisma.staffFinancialRecord, data.staffFinancialRecords);
+  await createRecords(prisma.payrollLog, data.payrollLogs);
 };
 
 const createPatientSeed = async (data: SeedData) => {
@@ -1545,15 +1782,17 @@ const createAppointmentSeed = async (data: SeedData) => {
 };
 
 const createInventorySeed = async (data: SeedData) => {
-  console.log("Creating inventory and inventory notifications...");
+  console.log("Creating inventory, inventory logs, and inventory notifications...");
   await createRecords(prisma.inventoryItem, data.inventory);
+  await createRecords(prisma.inventoryLog, data.inventoryLogs);
   await createRecords(prisma.notification, inventoryNotifications(data));
 };
 
 const createStandaloneFinanceSeed = async (data: SeedData) => {
-  console.log("Creating standalone finance records and expenses...");
+  console.log("Creating standalone finance records, expenses, and expense logs...");
   await createRecords(prisma.financeRecord, standaloneFinanceRecords(data));
   await createRecords(prisma.detailedExpense, data.detailedExpenses);
+  await createRecords(prisma.expenseLog, data.expenseLogs);
 };
 
 const seedPaymentMethods = async (data: SeedData) => {
@@ -1622,22 +1861,22 @@ const seedAll = async (data: SeedData) => {
 const seedCommandDescriptions = [
   ["npm run seed", "Seeds everything in dependency order."],
   ["npm run seed:patients", "Restores seeded patients and questionnaires."],
-  ["npm run seed:doctors", "Restores seeded doctors, staff, attendance, and staff finance rows."],
+  ["npm run seed:doctors", "Restores seeded doctors, staff, attendance, staff finance rows, and payroll logs."],
   ["npm run seed:staff", "Alias for seed:doctors."],
   ["npm run seed:appointments", "Restores appointments plus logs, payments, payment finance rows, and notifications. Requires seeded patients and doctors."],
-  ["npm run seed:inventory", "Restores seeded inventory items and inventory notifications."],
-  ["npm run seed:finance", "Restores standalone finance records and detailed expenses. Requires seeded patients and appointments."],
+  ["npm run seed:inventory", "Restores seeded inventory items, inventory logs, and inventory notifications."],
+  ["npm run seed:finance", "Restores standalone finance records, detailed expenses, and expense logs. Requires seeded patients and appointments."],
   ["npm run seed:payment-methods", "Restores seeded payment methods."],
 ] as const;
 
 const deleteCommandDescriptions = [
   ["npm run delete:all", "Deletes all rows managed by the seeder."],
   ["npm run delete:patients", "Deletes seeded patients and dependent seeded appointments."],
-  ["npm run delete:doctors", "Deletes seeded doctors/staff and dependent seeded appointments."],
+  ["npm run delete:doctors", "Deletes seeded doctors/staff, payroll logs, and dependent seeded appointments."],
   ["npm run delete:staff", "Alias for delete:doctors."],
   ["npm run delete:appointments", "Deletes seeded appointments plus logs, payments, payment finance rows, and notifications."],
-  ["npm run delete:inventory", "Deletes seeded inventory items and inventory notifications."],
-  ["npm run delete:finance", "Deletes standalone seeded finance records and detailed expenses."],
+  ["npm run delete:inventory", "Deletes seeded inventory items, inventory logs, and inventory notifications."],
+  ["npm run delete:finance", "Deletes standalone seeded finance records, detailed expenses, and expense logs."],
   ["npm run delete:payment-methods", "Deletes seeded payment methods."],
 ] as const;
 
@@ -1672,6 +1911,7 @@ async function main() {
     throw new Error("DATABASE_URL is not set. Add it to villahermosadentalclinic-server/.env first.");
   }
 
+  await assertRequiredSeedSchema();
   const data = await buildSeedData();
 
   switch (command) {

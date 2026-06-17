@@ -11,6 +11,7 @@ import {
   createDetailedExpense,
   updateDetailedExpense,
   payDetailedExpense,
+  getFinanceHistoryLogs,
   getRecurringExpenses,
   getPayroll,
   processPayroll,
@@ -37,6 +38,10 @@ router.get("/revenue", getRevenue);
 
 // GET - Get expense breakdown - MORE SPECIFIC ROUTE FIRST
 router.get("/expense-breakdown", getExpenseBreakdown);
+
+// GET - Get finance history logs
+router.get("/history/:entityType", getFinanceHistoryLogs);
+router.get("/history/:entityType/:entityId", getFinanceHistoryLogs);
 
 // GET - Get detailed expenses - MORE SPECIFIC ROUTE FIRST
 router.get("/detailed-expenses", getDetailedExpenses);

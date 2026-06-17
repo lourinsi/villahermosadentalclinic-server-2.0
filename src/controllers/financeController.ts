@@ -5,15 +5,23 @@ import {
   Revenue,
   ExpenseBreakdown,
   DetailedExpense,
+  FinanceHistoryLog,
   RecurringExpense,
   Payroll,
   RecentTransaction,
 } from "../types/finance";
 import { prisma } from "../lib/prisma";
 import { getAppointmentTypeName } from "../utils/appointment-types";
+import {
+  createFinanceHistoryLog,
+  findFinanceHistoryLogs,
+  getFinanceHistoryActor,
+  type FinanceHistoryEntityType,
+} from "../utils/financeHistoryLogs";
 
 const toFinanceRecord = (record: unknown): FinanceRecord => record as FinanceRecord;
 const toDetailedExpense = (expense: unknown): DetailedExpense => expense as DetailedExpense;
+const toFinanceHistoryLog = (log: unknown): FinanceHistoryLog => log as FinanceHistoryLog;
 type IdParams = { id: string };
 const EXPENSE_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"];
 
@@ -238,6 +246,20 @@ const toIsoDate = (value: unknown) => {
   return date ? date.toISOString() : undefined;
 };
 
+const historyStateKey = (value: unknown) => JSON.stringify(value || {});
+
+const payrollStateChanged = (previousState: unknown, newState: unknown) =>
+  historyStateKey(previousState) !== historyStateKey(newState);
+
+const buildFinanceHistoryResponse = (log: any): FinanceHistoryLog => ({
+  ...toFinanceHistoryLog(log),
+  context: log.context || undefined,
+  changedByName: log.changedByName || undefined,
+  changedByRole: log.changedByRole || undefined,
+  changedAt: toIsoDate(log.changedAt),
+  summary: log.summary || undefined,
+});
+
 export const createFinanceRecord = async (
   req: Request,
   res: Response<ApiResponse<FinanceRecord>>
@@ -278,6 +300,46 @@ export const createFinanceRecord = async (
     res.status(500).json({
       success: false,
       message: "Error adding finance record",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const getFinanceHistoryLogs = async (
+  req: Request<{ entityType: string; entityId?: string }>,
+  res: Response<ApiResponse<FinanceHistoryLog[]>>
+) => {
+  try {
+    const entityType = String(req.params.entityType || "").trim();
+    const entityId = String(req.params.entityId || req.query.entityId || "").trim();
+    const context = String(req.query.context || req.query.month || "").trim();
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+    const validEntityTypes = new Set(["expense", "inventory", "payroll"]);
+
+    if (!validEntityTypes.has(entityType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid finance history entity type",
+      });
+    }
+
+    const logs = await findFinanceHistoryLogs(prisma, {
+      entityType: entityType as FinanceHistoryEntityType,
+      entityId,
+      context,
+      limit,
+    });
+
+    res.json({
+      success: true,
+      message: "Finance history logs retrieved successfully",
+      data: logs.map(buildFinanceHistoryResponse),
+    });
+  } catch (error) {
+    console.error("[FINANCE HISTORY] Error fetching finance history logs:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching finance history logs",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
@@ -338,39 +400,60 @@ export const createDetailedExpense = async (
       inventoryQuantity: inventoryItemId ? inventoryQuantity : null,
     };
 
+    const actor = getFinanceHistoryActor(req);
     const newExpense = toDetailedExpense(
-      inventoryItemId
-        ? await prisma.$transaction(async (tx) => {
-            const inventoryItem = await tx.inventoryItem.findUnique({
+      await prisma.$transaction(async (tx) => {
+        const inventoryItem = inventoryItemId
+          ? await tx.inventoryItem.findUnique({
               where: { id: inventoryItemId },
-            });
+            })
+          : null;
 
-            if (!inventoryItem || inventoryItem.deleted) {
-              throw new Error("Linked inventory item not found");
-            }
+        if (inventoryItemId && (!inventoryItem || inventoryItem.deleted)) {
+          throw new Error("Linked inventory item not found");
+        }
 
-            const currentQuantity = toFiniteNumber(inventoryItem.quantity);
-            const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
-            const nextQuantity = currentQuantity + inventoryQuantity;
+        const createdExpense = await tx.detailedExpense.create({
+          data: expenseCreateData,
+        });
 
-            const createdExpense = await tx.detailedExpense.create({
-              data: expenseCreateData,
-            });
+        await createFinanceHistoryLog(tx, {
+          entityType: "expense",
+          entityId: createdExpense.id,
+          action: "create",
+          previousState: {},
+          newState: createdExpense,
+          amount: toFiniteNumber(createdExpense.amount),
+          ...actor,
+        });
 
-            await tx.inventoryItem.update({
-              where: { id: inventoryItemId },
-              data: {
-                quantity: nextQuantity,
-                totalValue: nextQuantity * costPerUnit,
-                updatedAt: new Date(),
-              },
-            });
+        if (inventoryItem && inventoryItemId) {
+          const currentQuantity = toFiniteNumber(inventoryItem.quantity);
+          const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
+          const nextQuantity = currentQuantity + inventoryQuantity;
+          const updatedInventoryItem = await tx.inventoryItem.update({
+            where: { id: inventoryItemId },
+            data: {
+              quantity: nextQuantity,
+              totalValue: nextQuantity * costPerUnit,
+              updatedAt: new Date(),
+            },
+          });
 
-            return createdExpense;
-          })
-        : await prisma.detailedExpense.create({
-            data: expenseCreateData,
-          })
+          await createFinanceHistoryLog(tx, {
+            entityType: "inventory",
+            entityId: inventoryItemId,
+            action: "stock_from_expense",
+            previousState: inventoryItem,
+            newState: updatedInventoryItem,
+            quantityChange: inventoryQuantity,
+            summary: `Stock increased from linked expense ${createdExpense.id}`,
+            ...actor,
+          });
+        }
+
+        return createdExpense;
+      })
     );
 
     res.status(201).json({
@@ -478,60 +561,79 @@ export const updateDetailedExpense = async (
       }),
     };
 
+    const actor = getFinanceHistoryActor(req);
     const updatedExpense = toDetailedExpense(
-      hasInventoryLinkUpdate
-        ? await prisma.$transaction(async (tx) => {
-            const updatedExpenseRecord = await tx.detailedExpense.update({
-              where: { id: req.params.id },
-              data: expenseUpdateData,
+      await prisma.$transaction(async (tx) => {
+        const updatedExpenseRecord = await tx.detailedExpense.update({
+          where: { id: req.params.id },
+          data: expenseUpdateData,
+        });
+
+        if (hasInventoryLinkUpdate) {
+          const quantityChanges = new Map<string, number>();
+          if (previousInventoryItemId) {
+            quantityChanges.set(previousInventoryItemId, -previousInventoryQuantity);
+          }
+          if (nextInventoryItemId) {
+            quantityChanges.set(
+              nextInventoryItemId,
+              (quantityChanges.get(nextInventoryItemId) || 0) + nextInventoryQuantity
+            );
+          }
+
+          for (const [itemId, quantityChange] of quantityChanges.entries()) {
+            if (Math.abs(quantityChange) < 0.0001) continue;
+
+            const inventoryItem = await tx.inventoryItem.findUnique({
+              where: { id: itemId },
             });
 
-            const quantityChanges = new Map<string, number>();
-            if (previousInventoryItemId) {
-              quantityChanges.set(previousInventoryItemId, -previousInventoryQuantity);
-            }
-            if (nextInventoryItemId) {
-              quantityChanges.set(
-                nextInventoryItemId,
-                (quantityChanges.get(nextInventoryItemId) || 0) + nextInventoryQuantity
-              );
+            if (!inventoryItem || inventoryItem.deleted) {
+              throw new Error("Linked inventory item not found");
             }
 
-            for (const [itemId, quantityChange] of quantityChanges.entries()) {
-              if (Math.abs(quantityChange) < 0.0001) continue;
+            const currentQuantity = toFiniteNumber(inventoryItem.quantity);
+            const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
+            const updatedQuantity = currentQuantity + quantityChange;
 
-              const inventoryItem = await tx.inventoryItem.findUnique({
-                where: { id: itemId },
-              });
-
-              if (!inventoryItem || inventoryItem.deleted) {
-                throw new Error("Linked inventory item not found");
-              }
-
-              const currentQuantity = toFiniteNumber(inventoryItem.quantity);
-              const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
-              const updatedQuantity = currentQuantity + quantityChange;
-
-              if (updatedQuantity < 0) {
-                throw new Error("Linked inventory adjustment would make stock negative");
-              }
-
-              await tx.inventoryItem.update({
-                where: { id: itemId },
-                data: {
-                  quantity: updatedQuantity,
-                  totalValue: updatedQuantity * costPerUnit,
-                  updatedAt: new Date(),
-                },
-              });
+            if (updatedQuantity < 0) {
+              throw new Error("Linked inventory adjustment would make stock negative");
             }
 
-            return updatedExpenseRecord;
-          })
-        : await prisma.detailedExpense.update({
-            where: { id: req.params.id },
-            data: expenseUpdateData,
-          })
+            const updatedInventoryItem = await tx.inventoryItem.update({
+              where: { id: itemId },
+              data: {
+                quantity: updatedQuantity,
+                totalValue: updatedQuantity * costPerUnit,
+                updatedAt: new Date(),
+              },
+            });
+
+            await createFinanceHistoryLog(tx, {
+              entityType: "inventory",
+              entityId: itemId,
+              action: "stock_from_expense",
+              previousState: inventoryItem,
+              newState: updatedInventoryItem,
+              quantityChange,
+              summary: `Stock adjusted from expense ${req.params.id}`,
+              ...actor,
+            });
+          }
+        }
+
+        await createFinanceHistoryLog(tx, {
+          entityType: "expense",
+          entityId: req.params.id,
+          action: "update",
+          previousState: currentExpense,
+          newState: updatedExpenseRecord,
+          amount: toFiniteNumber(updatedExpenseRecord.amount),
+          ...actor,
+        });
+
+        return updatedExpenseRecord;
+      })
     );
 
     res.json({
@@ -591,14 +693,29 @@ export const payDetailedExpense = async (
 
     const paymentMethod = String(req.body?.paymentMethod || currentExpense.paymentMethod || "cash").trim();
     const paymentDate = String(currentExpense.paymentDate || "").trim() || dateKey(new Date());
+    const actor = getFinanceHistoryActor(req);
     const updatedExpense = toDetailedExpense(
-      await prisma.detailedExpense.update({
-        where: { id: req.params.id },
-        data: {
-          status: "paid",
-          paymentMethod: paymentMethod || "cash",
-          paymentDate,
-        },
+      await prisma.$transaction(async (tx) => {
+        const paidExpense = await tx.detailedExpense.update({
+          where: { id: req.params.id },
+          data: {
+            status: "paid",
+            paymentMethod: paymentMethod || "cash",
+            paymentDate,
+          },
+        });
+
+        await createFinanceHistoryLog(tx, {
+          entityType: "expense",
+          entityId: req.params.id,
+          action: "pay",
+          previousState: currentExpense,
+          newState: paidExpense,
+          amount: toFiniteNumber(paidExpense.amount),
+          ...actor,
+        });
+
+        return paidExpense;
       })
     );
 
@@ -991,6 +1108,9 @@ export const processPayroll = async (
   try {
     const payrollMonth = normalizePayrollMonth(req.body?.month);
     const payrollDate = resolvePayrollDate(req.body?.paymentDate, payrollMonth);
+    const actor = getFinanceHistoryActor(req);
+    const previousPayrollData = await buildPayrollData(payrollMonth);
+    const previousPayrollByStaffId = new Map(previousPayrollData.map((entry) => [entry.id, entry]));
     const [activeStaff, staffFinancialRecords] = await Promise.all([
       prisma.staff.findMany({ where: { deleted: false }, orderBy: { name: "asc" } }),
       prisma.staffFinancialRecord.findMany(),
@@ -1035,6 +1155,24 @@ export const processPayroll = async (
     }
 
     const data = await buildPayrollData(payrollMonth);
+    await Promise.all(
+      data.map((entry) => {
+        const previousState = previousPayrollByStaffId.get(entry.id) || {};
+        if (!payrollStateChanged(previousState, entry)) return Promise.resolve(null);
+
+        return createFinanceHistoryLog(prisma, {
+          entityType: "payroll",
+          entityId: entry.id || "",
+          context: payrollMonth,
+          action: "process",
+          previousState,
+          newState: entry,
+          amount: toFiniteNumber(entry.total),
+          summary: `${monthLabel(payrollMonth)} payroll processed`,
+          ...actor,
+        });
+      })
+    );
     res.json({ success: true, message: "Payroll processed successfully", data });
   } catch (error) {
     console.error("[FINANCE PROCESS_PAYROLL] Error processing payroll:", error);
@@ -1054,6 +1192,8 @@ export const payPayrollEntry = async (
     const staffId = req.params.id;
     const payrollMonth = normalizePayrollMonth(req.body?.month);
     const paymentDate = resolvePayrollDate(req.body?.paymentDate, payrollMonth);
+    const actor = getFinanceHistoryActor(req);
+    const previousState = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || {};
 
     const staff = await prisma.staff.findUnique({ where: { id: staffId } });
     if (!staff || staff.deleted) {
@@ -1103,6 +1243,19 @@ export const payPayrollEntry = async (
     }
 
     const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    if (data && payrollStateChanged(previousState, data)) {
+      await createFinanceHistoryLog(prisma, {
+        entityType: "payroll",
+        entityId: staffId,
+        context: payrollMonth,
+        action: "pay",
+        previousState,
+        newState: data,
+        amount: toFiniteNumber(data.total),
+        summary: `${data.name} payroll marked paid`,
+        ...actor,
+      });
+    }
     res.json({ success: true, message: "Payroll entry paid successfully", data });
   } catch (error) {
     console.error("[FINANCE PAY_PAYROLL_ENTRY] Error paying payroll entry:", error);
@@ -1124,6 +1277,8 @@ export const addPayrollBonus = async (
     const amount = toFiniteNumber(req.body?.amount);
     const bonusDate = resolvePayrollDate(req.body?.date, payrollMonth);
     const notes = String(req.body?.notes || "").trim();
+    const actor = getFinanceHistoryActor(req);
+    const previousState = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || {};
 
     if (amount <= 0) {
       return res.status(400).json({
@@ -1155,6 +1310,19 @@ export const addPayrollBonus = async (
     });
 
     const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    if (data && payrollStateChanged(previousState, data)) {
+      await createFinanceHistoryLog(prisma, {
+        entityType: "payroll",
+        entityId: staffId,
+        context: payrollMonth,
+        action: "bonus",
+        previousState,
+        newState: data,
+        amount,
+        summary: `${staff.name} payroll bonus added`,
+        ...actor,
+      });
+    }
     res.status(201).json({ success: true, message: "Payroll bonus added successfully", data });
   } catch (error) {
     console.error("[FINANCE ADD_PAYROLL_BONUS] Error adding payroll bonus:", error);
@@ -1178,6 +1346,8 @@ export const configurePayrollEntry = async (
     const hasManagedAdjustment = Object.prototype.hasOwnProperty.call(req.body || {}, "managedAdjustment");
     const adjustmentNotes = String(req.body?.adjustmentNotes || req.body?.notes || "").trim();
     const salaryNotes = String(req.body?.salaryNotes || "").trim();
+    const actor = getFinanceHistoryActor(req);
+    const previousState = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || {};
 
     const staff = await prisma.staff.findUnique({ where: { id: staffId } });
     if (!staff || staff.deleted) {
@@ -1290,6 +1460,19 @@ export const configurePayrollEntry = async (
     });
 
     const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    if (data && payrollStateChanged(previousState, data)) {
+      await createFinanceHistoryLog(prisma, {
+        entityType: "payroll",
+        entityId: staffId,
+        context: payrollMonth,
+        action: "configure",
+        previousState,
+        newState: data,
+        amount: toFiniteNumber(data.total),
+        summary: `${staff.name} payroll configured`,
+        ...actor,
+      });
+    }
     res.json({ success: true, message: "Payroll entry configured successfully", data });
   } catch (error) {
     console.error("[FINANCE CONFIGURE_PAYROLL_ENTRY] Error configuring payroll entry:", error);

@@ -79,6 +79,21 @@ export interface RecentTransaction {
   source?: string;
 }
 
+export interface FinanceHistoryLog {
+  id: string;
+  entityType: string;
+  entityId: string;
+  context?: string;
+  action: string;
+  previousState: any;
+  newState: any;
+  changedBy: string;
+  changedByName?: string;
+  changedByRole?: string;
+  changedAt?: string | Date;
+  summary?: string;
+}
+
 export interface ApiResponse<T> {
   success: boolean;
   message: string;

@@ -7,6 +7,7 @@ import {
 } from "../types/staff";
 import { createNotification, notifyAdmin } from "../utils/notifications";
 import { prisma } from "../lib/prisma";
+import { createFinanceHistoryLog, getFinanceHistoryActor } from "../utils/financeHistoryLogs";
 
 interface Attendance extends BaseAttendance {
   id: string;
@@ -69,6 +70,32 @@ const buildStaffUpdateData = (input: Record<string, any>) => {
   data.updatedAt = new Date();
   return data;
 };
+
+const payrollFinancialRecordTypes = new Set([
+  "salary",
+  "payroll",
+  "monthlysalary",
+  "monthly_salary",
+  "bonus",
+  "commission",
+  "overtime",
+  "allowance",
+  "deduction",
+  "salaryadjustment",
+  "salary_adjustment",
+  "salaryreduction",
+  "salary_reduction",
+  "payrolladjustment",
+  "payroll_adjustment",
+]);
+
+const payrollRecordContext = (record: { date?: string | null }) => {
+  const date = String(record.date || "");
+  return /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 7) : "";
+};
+
+const shouldLogPayrollFinancialRecord = (record: { type?: string | null }) =>
+  payrollFinancialRecordTypes.has(String(record.type || "").toLowerCase().replace(/[^a-z0-9_]/g, ""));
 
 export const createStaff = async (
   req: Request,
@@ -343,18 +370,38 @@ export const createStaffFinancialRecord = async (
       });
     }
 
-    const newRecord = await prisma.staffFinancialRecord.create({
-      data: {
-        id: `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-        staffId: staffMember.id,
-        staffName: staffMember.name,
-        type: recordData.type,
-        amount: recordData.amount,
-        date: recordData.date,
-        status: "pending",
-        notes: recordData.notes || "",
-        repaymentSchedule: recordData.repaymentSchedule || "",
-      },
+    const actor = getFinanceHistoryActor(req);
+    const newRecord = await prisma.$transaction(async (tx) => {
+      const createdRecord = await tx.staffFinancialRecord.create({
+        data: {
+          id: `staff_fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          staffId: staffMember.id,
+          staffName: staffMember.name,
+          type: recordData.type,
+          amount: recordData.amount,
+          date: recordData.date,
+          status: "pending",
+          notes: recordData.notes || "",
+          repaymentSchedule: recordData.repaymentSchedule || "",
+        },
+      });
+
+      if (shouldLogPayrollFinancialRecord(createdRecord)) {
+        await createFinanceHistoryLog(tx, {
+          entityType: "payroll",
+          entityId: createdRecord.staffId,
+          context: payrollRecordContext(createdRecord),
+          action: "financial_record_create",
+          previousState: {},
+          newState: createdRecord,
+          amount: toFiniteNumber(createdRecord.amount),
+          payrollRecordId: createdRecord.id,
+          summary: `${createdRecord.staffName} ${createdRecord.type} record created`,
+          ...actor,
+        });
+      }
+
+      return createdRecord;
     });
 
     createNotification(
@@ -431,13 +478,33 @@ export const updateStaffFinancialRecord = async (
       staffInfoUpdate = { staffId: staffMember.id, staffName: staffMember.name };
     }
 
-    const updatedRecord = await prisma.staffFinancialRecord.update({
-      where: { id },
-      data: {
-        ...updates,
-        ...staffInfoUpdate,
-        id: undefined,
-      } as any,
+    const actor = getFinanceHistoryActor(req);
+    const updatedRecord = await prisma.$transaction(async (tx) => {
+      const savedRecord = await tx.staffFinancialRecord.update({
+        where: { id },
+        data: {
+          ...updates,
+          ...staffInfoUpdate,
+          id: undefined,
+        } as any,
+      });
+
+      if (shouldLogPayrollFinancialRecord(currentRecord) || shouldLogPayrollFinancialRecord(savedRecord)) {
+        await createFinanceHistoryLog(tx, {
+          entityType: "payroll",
+          entityId: savedRecord.staffId,
+          context: payrollRecordContext(savedRecord),
+          action: "financial_record_update",
+          previousState: currentRecord,
+          newState: savedRecord,
+          amount: toFiniteNumber(savedRecord.amount),
+          payrollRecordId: savedRecord.id,
+          summary: `${savedRecord.staffName} ${savedRecord.type} record updated`,
+          ...actor,
+        });
+      }
+
+      return savedRecord;
     });
 
     res.json({
@@ -478,9 +545,29 @@ export const approveStaffFinancialRecord = async (
       });
     }
 
-    const updatedRecord = await prisma.staffFinancialRecord.update({
-      where: { id: req.params.id },
-      data: { status: "approved" },
+    const actor = getFinanceHistoryActor(req);
+    const updatedRecord = await prisma.$transaction(async (tx) => {
+      const savedRecord = await tx.staffFinancialRecord.update({
+        where: { id: req.params.id },
+        data: { status: "approved" },
+      });
+
+      if (shouldLogPayrollFinancialRecord(savedRecord)) {
+        await createFinanceHistoryLog(tx, {
+          entityType: "payroll",
+          entityId: savedRecord.staffId,
+          context: payrollRecordContext(savedRecord),
+          action: "financial_record_approve",
+          previousState: currentRecord,
+          newState: savedRecord,
+          amount: toFiniteNumber(savedRecord.amount),
+          payrollRecordId: savedRecord.id,
+          summary: `${savedRecord.staffName} ${savedRecord.type} record approved`,
+          ...actor,
+        });
+      }
+
+      return savedRecord;
     });
 
     createNotification(
@@ -520,7 +607,25 @@ export const deleteStaffFinancialRecord = async (
       });
     }
 
-    await prisma.staffFinancialRecord.delete({ where: { id: req.params.id } });
+    const actor = getFinanceHistoryActor(req);
+    await prisma.$transaction(async (tx) => {
+      await tx.staffFinancialRecord.delete({ where: { id: req.params.id } });
+
+      if (shouldLogPayrollFinancialRecord(currentRecord)) {
+        await createFinanceHistoryLog(tx, {
+          entityType: "payroll",
+          entityId: currentRecord.staffId,
+          context: payrollRecordContext(currentRecord),
+          action: "financial_record_delete",
+          previousState: currentRecord,
+          newState: {},
+          amount: toFiniteNumber(currentRecord.amount),
+          payrollRecordId: currentRecord.id,
+          summary: `${currentRecord.staffName} ${currentRecord.type} record deleted`,
+          ...actor,
+        });
+      }
+    });
 
     res.json({
       success: true,
