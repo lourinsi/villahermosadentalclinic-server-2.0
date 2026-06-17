@@ -34,8 +34,10 @@ export interface DetailedExpense {
   amount: number;
   vendor: string;
   paymentMethod: string;
+  paymentDate?: string;
   status: string;
   recurring: boolean;
+  createdAt?: string | Date;
   inventoryItemId?: string;
   inventoryQuantity?: number;
 }

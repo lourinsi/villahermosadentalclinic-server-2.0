@@ -288,13 +288,17 @@ model DetailedExpense {
   amount        Float
   vendor        String?
   paymentMethod String?
+  paymentDate   String?
   status        String?
   recurring     Boolean @default(false)
+  createdAt     DateTime @default(now())
   inventoryItemId   String?
   inventoryQuantity Float?
 
   @@index([category])
   @@index([date])
+  @@index([paymentDate])
+  @@index([createdAt])
   @@index([inventoryItemId])
   @@map("detailed_expenses")
 }

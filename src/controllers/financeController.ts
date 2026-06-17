@@ -305,7 +305,14 @@ export const createDetailedExpense = async (
         message: "Inventory quantity must be greater than zero when linking stock",
       });
     }
-    if (inventoryItemId && normalizeExpenseStatus(expenseData.status) === "cancelled") {
+
+    const requesterRole = normalizeCodeValue((req as any).user?.role);
+    const canSetInitialExpenseStatus = requesterRole === "admin";
+    const initialExpenseStatus = canSetInitialExpenseStatus
+      ? normalizeExpenseStatus(expenseData.status)
+      : "pending";
+
+    if (inventoryItemId && initialExpenseStatus === "cancelled") {
       return res.status(400).json({
         success: false,
         message: "Linked stock expenses must be pending or paid",
@@ -319,9 +326,14 @@ export const createDetailedExpense = async (
       description: expenseData.description,
       amount: Number(expenseData.amount),
       vendor: expenseData.vendor || "",
-      paymentMethod: expenseData.paymentMethod || "",
-      status: normalizeExpenseStatus(expenseData.status),
+      paymentMethod:
+        initialExpenseStatus === "paid"
+          ? expenseData.paymentMethod || "cash"
+          : expenseData.paymentMethod || "",
+      paymentDate: initialExpenseStatus === "paid" ? expenseData.date : null,
+      status: initialExpenseStatus,
       recurring: Boolean(expenseData.recurring),
+      createdAt: new Date(),
       inventoryItemId: inventoryItemId || null,
       inventoryQuantity: inventoryItemId ? inventoryQuantity : null,
     };
@@ -367,6 +379,8 @@ export const createDetailedExpense = async (
       data: {
         ...newExpense,
         status: normalizeExpenseStatus(newExpense.status),
+        paymentDate: newExpense.paymentDate || undefined,
+        createdAt: toIsoDate(newExpense.createdAt),
       },
     });
   } catch (error) {
@@ -418,7 +432,16 @@ export const updateDetailedExpense = async (
     const previousInventoryQuantity = toFiniteNumber(currentExpense.inventoryQuantity);
     const nextInventoryItemId = hasInventoryLinkUpdate ? inventoryItemId : previousInventoryItemId;
     const nextInventoryQuantity = hasInventoryLinkUpdate ? inventoryQuantity : previousInventoryQuantity;
-    const nextExpenseStatus = normalizeExpenseStatus(updates.status ?? currentExpense.status);
+    const currentExpenseStatus = normalizeExpenseStatus(currentExpense.status);
+    const requesterRole = normalizeCodeValue((req as any).user?.role);
+    const canUpdateExpenseStatus = requesterRole === "admin";
+    const hasStatusUpdate =
+      canUpdateExpenseStatus && Object.prototype.hasOwnProperty.call(updates, "status");
+    const nextExpenseStatus = hasStatusUpdate
+      ? normalizeExpenseStatus(updates.status)
+      : currentExpenseStatus;
+    const shouldUpdatePaymentDate =
+      hasStatusUpdate && currentExpenseStatus !== nextExpenseStatus;
 
     if (nextInventoryItemId && nextInventoryQuantity <= 0) {
       return res.status(400).json({
@@ -441,7 +464,13 @@ export const updateDetailedExpense = async (
       ...(updates.amount !== undefined && { amount: Number(updates.amount) }),
       ...(updates.vendor !== undefined && { vendor: updates.vendor || "" }),
       ...(updates.paymentMethod !== undefined && { paymentMethod: updates.paymentMethod || "" }),
-      ...(updates.status !== undefined && { status: nextExpenseStatus }),
+      ...(hasStatusUpdate && { status: nextExpenseStatus }),
+      ...(shouldUpdatePaymentDate && {
+        paymentDate:
+          nextExpenseStatus === "paid"
+            ? currentExpense.paymentDate || dateKey(new Date())
+            : null,
+      }),
       ...(updates.recurring !== undefined && { recurring: Boolean(updates.recurring) }),
       ...(hasInventoryLinkUpdate && {
         inventoryItemId: nextInventoryItemId || null,
@@ -511,6 +540,8 @@ export const updateDetailedExpense = async (
       data: {
         ...updatedExpense,
         status: normalizeExpenseStatus(updatedExpense.status),
+        paymentDate: updatedExpense.paymentDate || undefined,
+        createdAt: toIsoDate(updatedExpense.createdAt),
       },
     });
   } catch (error) {
@@ -559,12 +590,14 @@ export const payDetailedExpense = async (
     }
 
     const paymentMethod = String(req.body?.paymentMethod || currentExpense.paymentMethod || "cash").trim();
+    const paymentDate = String(currentExpense.paymentDate || "").trim() || dateKey(new Date());
     const updatedExpense = toDetailedExpense(
       await prisma.detailedExpense.update({
         where: { id: req.params.id },
         data: {
           status: "paid",
           paymentMethod: paymentMethod || "cash",
+          paymentDate,
         },
       })
     );
@@ -575,6 +608,8 @@ export const payDetailedExpense = async (
       data: {
         ...updatedExpense,
         status: normalizeExpenseStatus(updatedExpense.status),
+        paymentDate: updatedExpense.paymentDate || undefined,
+        createdAt: toIsoDate(updatedExpense.createdAt),
       },
     });
   } catch (error) {
@@ -853,8 +888,10 @@ export const getDetailedExpenses = async (
       amount: toFiniteNumber(expense.amount),
       vendor: expense.vendor || "",
       paymentMethod: expense.paymentMethod || "",
+      paymentDate: expense.paymentDate || undefined,
       status: normalizeExpenseStatus(expense.status),
       recurring: Boolean(expense.recurring),
+      createdAt: toIsoDate(expense.createdAt),
       inventoryItemId: expense.inventoryItemId || "",
       inventoryQuantity: toFiniteNumber(expense.inventoryQuantity),
     }));
@@ -1407,17 +1444,21 @@ export const getRecentTransactions = async (
       );
 
     const expenseTransactions = detailedExpenses
-      .filter((expense) => !isCancelledExpense(expense))
-      .map((expense) => ({
-        id: expense.id,
-        date: expense.date,
-        description: expense.description,
-        amount: -Math.abs(toFiniteNumber(expense.amount)),
-        type: "expense",
-        method: normalizeMethod(expense.paymentMethod),
-        logDate: expense.date,
-        source: "expense",
-      }));
+      .filter((expense) => normalizeExpenseStatus(expense.status) === "paid")
+      .map((expense) => {
+        const paymentDate = expense.paymentDate || expense.date;
+
+        return {
+          id: expense.id,
+          date: paymentDate,
+          description: expense.description,
+          amount: -Math.abs(toFiniteNumber(expense.amount)),
+          type: "expense",
+          method: normalizeMethod(expense.paymentMethod),
+          logDate: paymentDate,
+          source: "expense",
+        };
+      });
 
     const data = [...paymentTransactions, ...financeTransactions, ...appointmentLogTransactions, ...expenseTransactions]
       .sort((a, b) => {
