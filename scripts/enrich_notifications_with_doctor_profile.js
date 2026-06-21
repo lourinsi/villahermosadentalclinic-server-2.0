@@ -55,7 +55,9 @@ function main() {
       let didChange = false;
 
       if (profile && n.metadata.doctorProfile !== profile) {
-        n.metadata.doctorProfile = profile;
+          n.metadata.doctorProfile = profile;
+          // Also populate a canonical notification image field used by the client
+          if (!n.metadata.notificationImage) n.metadata.notificationImage = profile;
         didChange = true;
       }
 

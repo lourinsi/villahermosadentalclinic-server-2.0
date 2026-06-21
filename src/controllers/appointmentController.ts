@@ -102,6 +102,7 @@ const patientIdentitySelect = {
   email: true,
   phone: true,
   profilePicture: true,
+  dateOfBirth: true,
 } as const;
 
 const getActivePatientIdentities = async (patientIds: string[]): Promise<PatientIdentity[]> => {
@@ -191,6 +192,7 @@ const appointmentData = (appointment: Appointment, previousState?: Appointment) 
   status: appointment.status,
   paymentStatus: appointment.paymentStatus,
   cancellationReason: appointment.cancellationReason,
+  treatmentNotes: appointment.treatmentNotes,
   previousState,
   newState: appointment,
 });
@@ -218,6 +220,7 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     doctorId: appointment.doctorId || null,
     duration: normalizeAppointmentDuration(appointment.duration),
     notes: appointment.notes || "",
+    treatmentNotes: appointment.treatmentNotes || "",
     serviceType: appointment.serviceType || null,
     status,
     cancellationReason: appointment.cancellationReason || null,
@@ -246,6 +249,7 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "doctorId",
     "duration",
     "notes",
+    "treatmentNotes",
     "serviceType",
     "status",
     "cancellationReason",
@@ -253,7 +257,7 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "paymentMethod",
     "balance",
     "totalPaid",
-    "transactions",
+    "transactions", // Keep transactions for backward compatibility if needed, but it's deprecated.
   ] as const;
 
   const data: Record<string, any> = {};
@@ -400,6 +404,7 @@ export const addAppointment = async (
     const appointments = await readAppointmentsWithLifecycle();
     const doctorStaff = await getActiveDoctorStaff();
     const appointmentInput: Appointment = req.body;
+    const appointmentLogNotes = (req.body as any).logNotes || appointmentInput.notes || "";
     const isSeeding = req.body.isSeeding === true;
 
     const requestedStatus = getPastRestrictedAppointmentStatus(
@@ -510,7 +515,7 @@ export const addAppointment = async (
       changedByName,
       "update",
       created.totalPaid || 0,
-      created.notes
+      appointmentLogNotes
     );
 
     if (created.totalPaid && created.totalPaid > 0) {
@@ -945,9 +950,8 @@ export const updateAppointment = async (
     else if (updates.status && updates.status !== oldStatus) logChangeType = "status_change";
     else if ((updates.date && updates.date !== oldAppointment.date) || (updates.time && updates.time !== oldAppointment.time)) logChangeType = "rescheduled";
     else if (updates.notes !== undefined && updates.notes !== oldAppointment.notes) logChangeType = "notes_update";
+    else if ((updates as any).treatmentNotes !== undefined && (updates as any).treatmentNotes !== (oldAppointment as any).treatmentNotes) logChangeType = "notes_update";
     else if (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus) logChangeType = "payment";
-
-    await createAppointmentLog(id, oldAppointment, updatedAppointment, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
 
     if (paymentAmount > 0 || (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus)) {
       await createPaymentLog(
@@ -968,6 +972,7 @@ export const updateAppointment = async (
         data: buildAppointmentUpdateData(updatedAppointment) as any,
       })
     );
+    await createAppointmentLog(id, oldAppointment, saved, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
     const oldPatientRecord = oldAppointment.patientId === updatedAppointment.patientId
       ? patientRecord
       : await getActivePatientIdentity(oldAppointment.patientId);
@@ -1004,6 +1009,7 @@ export const updateAppointment = async (
       Object.prototype.hasOwnProperty.call(updates, "price") ||
       Object.prototype.hasOwnProperty.call(updates, "discount") ||
       Object.prototype.hasOwnProperty.call(updates, "notes") ||
+      Object.prototype.hasOwnProperty.call(updates, "treatmentNotes") ||
       Object.prototype.hasOwnProperty.call(updates, "patientId") ||
       Object.prototype.hasOwnProperty.call(updates, "patientName");
 
@@ -1040,10 +1046,10 @@ export const deleteAppointment = async (
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
 
-    await prisma.appointment.update({
+    const deletedAppointment = toAppointment(await prisma.appointment.update({
       where: { id: req.params.id },
-      data: { deleted: true, deletedAt: new Date(), updatedAt: new Date() },
-    });
+      data: { status: "cancelled", deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+    }));
 
     if (appointment.id) {
       const patientRecord = await getActivePatientIdentity(appointment.patientId);
@@ -1186,6 +1192,7 @@ export const bookPublicAppointment = async (
       doctor: appointmentDoctor,
       doctorId: resolvedDoctor.doctorId,
       notes: notes || "",
+      treatmentNotes: req.body.treatmentNotes || "",
       serviceType: serviceType || "",
       status: requestedStatus,
       cancellationReason: null,
@@ -1200,6 +1207,7 @@ export const bookPublicAppointment = async (
       deleted: false,
     } as any;
 
+    const appointmentLogNotes = (req.body as any).logNotes || notes || "";
     const createData = buildAppointmentCreateData(appointmentInput as Appointment);
     const newAppointment = toAppointment(createData);
 
@@ -1209,7 +1217,7 @@ export const bookPublicAppointment = async (
       await cancelOverlappingPendingAppointments(appointments, newAppointment, "patient", patientDisplayName, doctorStaff);
     }
 
-    const created = toAppointment(await prisma.appointment.create({ data: createData as any }));
+    let created = toAppointment(await prisma.appointment.create({ data: createData as any }));
     const createdForResponse = withResolvedDoctor(
       withResolvedPatient(created as any, [patient as PatientIdentity]),
       doctorStaff
@@ -1225,7 +1233,7 @@ export const bookPublicAppointment = async (
       patientDisplayName,
       "update",
       created.totalPaid || 0,
-      created.notes
+      appointmentLogNotes
     );
 
     if (created.totalPaid && created.totalPaid > 0) {

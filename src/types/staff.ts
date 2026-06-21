@@ -17,7 +17,7 @@ export interface Staff {
   createdAt?: Date;
   updatedAt?: Date;
   deleted?: boolean;
-  deletedAt?: Date;
+  deletedAt?: Date | null;
 }
 
 export interface StaffFinancialRecord {

@@ -9,7 +9,7 @@ export interface FinanceRecord {
   createdAt?: Date;
   updatedAt?: Date;
   deleted?: boolean;
-  deletedAt?: Date;
+  deletedAt?: Date | null;
 }
 
 export interface Revenue {
@@ -34,8 +34,12 @@ export interface DetailedExpense {
   amount: number;
   vendor: string;
   paymentMethod: string;
+  paymentDate?: string;
   status: string;
   recurring: boolean;
+  createdAt?: string | Date;
+  inventoryItemId?: string;
+  inventoryQuantity?: number;
 }
 
 export interface RecurringExpense {
@@ -51,9 +55,14 @@ export interface Payroll {
   name: string;
   role: string;
   baseSalary: number;
+  staffBaseSalary?: number;
   bonus: number;
+  managedAdjustment?: number;
   total: number;
   status: string;
+  salaryRecordId?: string;
+  paymentDate?: string;
+  month?: string;
 }
 
 export interface RecentTransaction {
@@ -68,6 +77,21 @@ export interface RecentTransaction {
   logDate?: string;
   changedByName?: string;
   source?: string;
+}
+
+export interface FinanceHistoryLog {
+  id: string;
+  entityType: string;
+  entityId: string;
+  context?: string;
+  action: string;
+  previousState: any;
+  newState: any;
+  changedBy: string;
+  changedByName?: string;
+  changedByRole?: string;
+  changedAt?: string | Date;
+  summary?: string;
 }
 
 export interface ApiResponse<T> {

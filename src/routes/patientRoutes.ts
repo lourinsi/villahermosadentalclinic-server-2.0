@@ -4,6 +4,7 @@ import {
   addPublicBookingPatient,
   addDependent,
   getPatients,
+  getPatientOptions,
   getPatientById,
   updatePatient,
   deletePatient,
@@ -24,6 +25,9 @@ router.post("/dependent", requireAuth, addDependent);
 
 // GET - Get all patients (require auth so we can filter for patient role)
 router.get("/", requireAuth, getPatients);
+
+// GET - Lightweight patient options for selects/typeaheads
+router.get("/options", requireAuth, getPatientOptions);
 
 // GET - Get patient by ID
 router.get("/:id", getPatientById);

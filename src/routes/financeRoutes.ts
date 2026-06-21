@@ -9,8 +9,15 @@ import {
   getExpenseBreakdown,
   getDetailedExpenses,
   createDetailedExpense,
+  updateDetailedExpense,
+  payDetailedExpense,
+  getFinanceHistoryLogs,
   getRecurringExpenses,
   getPayroll,
+  processPayroll,
+  addPayrollBonus,
+  configurePayrollEntry,
+  payPayrollEntry,
   getRecentTransactions,
 } from "../controllers/financeController";
 import { requireAuth } from "../middleware/authMiddleware";
@@ -32,14 +39,39 @@ router.get("/revenue", getRevenue);
 // GET - Get expense breakdown - MORE SPECIFIC ROUTE FIRST
 router.get("/expense-breakdown", getExpenseBreakdown);
 
+// GET - Get finance history logs
+router.get("/history/:entityType", getFinanceHistoryLogs);
+router.get("/history/:entityType/:entityId", getFinanceHistoryLogs);
+
 // GET - Get detailed expenses - MORE SPECIFIC ROUTE FIRST
 router.get("/detailed-expenses", getDetailedExpenses);
 
 // POST - Add new detailed expense
 router.post("/detailed-expenses", createDetailedExpense);
 
+// PUT - Update detailed expense
+router.put("/detailed-expenses/:id", updateDetailedExpense);
+
+// PATCH - Update detailed expense
+router.patch("/detailed-expenses/:id", updateDetailedExpense);
+
+// POST - Mark a detailed expense paid
+router.post("/detailed-expenses/:id/pay", payDetailedExpense);
+
 // GET - Get recurring expenses - MORE SPECIFIC ROUTE FIRST
 router.get("/recurring-expenses", getRecurringExpenses);
+
+// POST - Create missing monthly payroll records
+router.post("/payroll/process", processPayroll);
+
+// POST - Add a staff bonus for the selected payroll month
+router.post("/payroll/:id/bonus", addPayrollBonus);
+
+// PUT - Configure a staff member's payroll salary and monthly adjustment
+router.put("/payroll/:id/configure", configurePayrollEntry);
+
+// POST - Mark a staff member's payroll entry paid
+router.post("/payroll/:id/pay", payPayrollEntry);
 
 // GET - Get payroll data - MORE SPECIFIC ROUTE FIRST
 router.get("/payroll", getPayroll);

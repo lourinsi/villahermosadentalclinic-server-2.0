@@ -8,6 +8,10 @@ export type PatientIdentity = {
   email?: string | null;
   phone?: string | null;
   profilePicture?: string | null;
+  dateOfBirth?: string | null;
+  dob?: string | null;
+  birthDate?: string | null;
+  birthday?: string | null;
 };
 
 const normalizeIdentifier = (value: unknown): string =>
@@ -123,6 +127,18 @@ export const withResolvedPatient = <T extends Record<string, any>>(
       value.patient?.profilePicture ||
       ""
   ).trim();
+  const patientDateOfBirth = String(
+    patient.dateOfBirth ||
+      patient.dob ||
+      patient.birthDate ||
+      patient.birthday ||
+      value.patientDateOfBirth ||
+      value.patientDob ||
+      value.patientBirthDate ||
+      value.patientBirthday ||
+      value.patient?.dateOfBirth ||
+      ""
+  ).trim();
 
   const existingPatient = value.patient && typeof value.patient === "object" ? value.patient : {};
 
@@ -139,6 +155,10 @@ export const withResolvedPatient = <T extends Record<string, any>>(
     patientProfile: patientProfile || value.patientProfile,
     patientProfilePicture: patientProfile || value.patientProfilePicture,
     profilePicture: patientProfile || value.profilePicture,
+    patientDateOfBirth: patientDateOfBirth || value.patientDateOfBirth,
+    patientDob: patientDateOfBirth || value.patientDob,
+    patientBirthDate: patientDateOfBirth || value.patientBirthDate,
+    patientBirthday: patientDateOfBirth || value.patientBirthday,
     patient: {
       ...existingPatient,
       id: patientId || existingPatient.id,
@@ -149,6 +169,8 @@ export const withResolvedPatient = <T extends Record<string, any>>(
       phone: patient.phone ?? existingPatient.phone,
       profilePicture: patientProfile || existingPatient.profilePicture,
       profilePictureUrl: patientProfile || existingPatient.profilePictureUrl,
+      dateOfBirth: patientDateOfBirth || existingPatient.dateOfBirth,
+      dob: patientDateOfBirth || existingPatient.dob,
     },
   };
 };

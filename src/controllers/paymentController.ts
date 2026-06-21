@@ -45,6 +45,7 @@ const patientIdentitySelect = {
   email: true,
   phone: true,
   profilePicture: true,
+  dateOfBirth: true,
 } as const;
 
 const getActivePatientIdentities = async (patientIds: Array<string | null | undefined>): Promise<PatientIdentity[]> => {

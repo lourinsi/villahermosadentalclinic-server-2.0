@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { InventoryItem, ApiResponse } from "../types/inventory";
 import { notifyAdmin } from "../utils/notifications";
 import { prisma } from "../lib/prisma";
+import { createFinanceHistoryLog, getFinanceHistoryActor } from "../utils/financeHistoryLogs";
 
 const LOW_STOCK_THRESHOLD = 5;
 
@@ -15,28 +16,50 @@ export const createInventoryItem = async (
   try {
     const itemData: InventoryItem = req.body;
 
-    if (!itemData.item || !itemData.quantity || !itemData.unit || !itemData.costPerUnit) {
+    if (
+      !itemData.item ||
+      itemData.quantity === undefined ||
+      Number(itemData.quantity) < 0 ||
+      !itemData.unit ||
+      itemData.costPerUnit === undefined ||
+      Number(itemData.costPerUnit) <= 0
+    ) {
       return res.status(400).json({
         success: false,
         message: "Missing required fields: item, quantity, unit, costPerUnit",
       });
     }
 
+    const actor = getFinanceHistoryActor(req);
     const newItem = toInventoryItem(
-      await prisma.inventoryItem.create({
-        data: {
-          id: `inv_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-          item: itemData.item,
-          quantity: Number(itemData.quantity),
-          unit: itemData.unit,
-          costPerUnit: Number(itemData.costPerUnit),
-          totalValue: Number(itemData.totalValue ?? Number(itemData.quantity) * Number(itemData.costPerUnit)),
-          supplier: itemData.supplier || "",
-          lastOrdered: itemData.lastOrdered || "",
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          deleted: false,
-        },
+      await prisma.$transaction(async (tx) => {
+        const createdItem = await tx.inventoryItem.create({
+          data: {
+            id: `inv_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            item: itemData.item,
+            quantity: Number(itemData.quantity),
+            unit: itemData.unit,
+            costPerUnit: Number(itemData.costPerUnit),
+            totalValue: Number(itemData.totalValue ?? Number(itemData.quantity) * Number(itemData.costPerUnit)),
+            supplier: itemData.supplier || "",
+            lastOrdered: itemData.lastOrdered || "",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            deleted: false,
+          },
+        });
+
+        await createFinanceHistoryLog(tx, {
+          entityType: "inventory",
+          entityId: createdItem.id,
+          action: "create",
+          previousState: {},
+          newState: createdItem,
+          quantityChange: Number(createdItem.quantity) || 0,
+          ...actor,
+        });
+
+        return createdItem;
       })
     );
 
@@ -134,19 +157,34 @@ export const updateInventoryItem = async (
     }
 
     const updates = req.body;
+    const actor = getFinanceHistoryActor(req);
     const updatedItem = toInventoryItem(
-      await prisma.inventoryItem.update({
-        where: { id: req.params.id },
-        data: {
-          ...(updates.item !== undefined && { item: updates.item }),
-          ...(updates.quantity !== undefined && { quantity: Number(updates.quantity) }),
-          ...(updates.unit !== undefined && { unit: updates.unit }),
-          ...(updates.costPerUnit !== undefined && { costPerUnit: Number(updates.costPerUnit) }),
-          ...(updates.totalValue !== undefined && { totalValue: Number(updates.totalValue) }),
-          ...(updates.supplier !== undefined && { supplier: updates.supplier }),
-          ...(updates.lastOrdered !== undefined && { lastOrdered: updates.lastOrdered }),
-          updatedAt: new Date(),
-        },
+      await prisma.$transaction(async (tx) => {
+        const savedItem = await tx.inventoryItem.update({
+          where: { id: req.params.id },
+          data: {
+            ...(updates.item !== undefined && { item: updates.item }),
+            ...(updates.quantity !== undefined && { quantity: Number(updates.quantity) }),
+            ...(updates.unit !== undefined && { unit: updates.unit }),
+            ...(updates.costPerUnit !== undefined && { costPerUnit: Number(updates.costPerUnit) }),
+            ...(updates.totalValue !== undefined && { totalValue: Number(updates.totalValue) }),
+            ...(updates.supplier !== undefined && { supplier: updates.supplier }),
+            ...(updates.lastOrdered !== undefined && { lastOrdered: updates.lastOrdered }),
+            updatedAt: new Date(),
+          },
+        });
+
+        await createFinanceHistoryLog(tx, {
+          entityType: "inventory",
+          entityId: req.params.id,
+          action: "update",
+          previousState: current,
+          newState: savedItem,
+          quantityChange: (Number(savedItem.quantity) || 0) - (Number(current.quantity) || 0),
+          ...actor,
+        });
+
+        return savedItem;
       })
     );
 
@@ -183,9 +221,22 @@ export const deleteInventoryItem = async (
       return res.status(404).json({ success: false, message: "Inventory item not found" });
     }
 
-    await prisma.inventoryItem.update({
-      where: { id: req.params.id },
-      data: { deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+    const actor = getFinanceHistoryActor(req);
+    await prisma.$transaction(async (tx) => {
+      const deletedItem = await tx.inventoryItem.update({
+        where: { id: req.params.id },
+        data: { deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+      });
+
+      await createFinanceHistoryLog(tx, {
+        entityType: "inventory",
+        entityId: req.params.id,
+        action: "delete",
+        previousState: current,
+        newState: deletedItem,
+        quantityChange: -(Number(current.quantity) || 0),
+        ...actor,
+      });
     });
 
     res.json({ success: true, message: "Inventory item soft-deleted successfully" });

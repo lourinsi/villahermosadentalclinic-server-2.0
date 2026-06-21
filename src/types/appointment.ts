@@ -15,6 +15,7 @@ export interface Appointment {
   doctorProfilePicture?: string | null;
   duration?: number; // in minutes
   notes?: string;
+  treatmentNotes?: string;
   serviceType?: string;
   // Status is flexible to accept any value from the JSON configuration
   status?: string;
@@ -29,6 +30,10 @@ export interface Appointment {
   patientPhone?: string | null;
   patientProfile?: string | null;
   patientProfilePicture?: string | null;
+  patientDateOfBirth?: string | null;
+  patientDob?: string | null;
+  patientBirthDate?: string | null;
+  patientBirthday?: string | null;
   profilePicture?: string | null;
   patient?: {
     id?: string;
@@ -39,6 +44,8 @@ export interface Appointment {
     phone?: string | null;
     profilePicture?: string | null;
     profilePictureUrl?: string | null;
+    dateOfBirth?: string | null;
+    dob?: string | null;
   };
   // Deprecated: transactions are now stored in payments collection. Keep for backward compat only.
   transactions?: {
@@ -53,7 +60,7 @@ export interface Appointment {
   createdAt?: Date;
   updatedAt?: Date;
   deleted?: boolean;
-  deletedAt?: Date;
+  deletedAt?: Date | null;
 }
 
 export interface ApiResponse<T> {

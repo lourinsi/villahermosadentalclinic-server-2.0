@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { Notification } from "../types/notification";
 import { ApiResponse } from "../types/patient";
 import { prisma } from "../lib/prisma";
-import { updateOrCreateNotificationForAppointment } from "../utils/notifications";
+import { updateOrCreateNotificationForAppointment, createNotification } from "../utils/notifications";
 
 const toNotification = (notification: any): Notification => ({
   ...notification,
@@ -111,26 +111,18 @@ export const addNotification = async (
       });
     }
 
-    const newNotification = await prisma.notification.create({
-      data: {
-        id: `notification_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-        userId: notificationData.userId,
-        title: notificationData.title,
-        message: notificationData.message,
-        type: notificationData.type,
-        metadata: notificationData.metadata as any,
-        createdAt: notificationData.createdAt ? new Date(notificationData.createdAt) : new Date(),
-        updatedAt: notificationData.updatedAt ? new Date(notificationData.updatedAt) : new Date(),
-        isRead: notificationData.isRead || false,
-        deleted: false,
-        isLog: notificationData.isLog || false,
-      },
-    });
+    const created = await createNotification(
+      notificationData.userId,
+      notificationData.title,
+      notificationData.message,
+      notificationData.type as any,
+      notificationData.metadata
+    );
 
     res.status(201).json({
       success: true,
       message: "Notification added successfully",
-      data: toNotification(newNotification),
+      data: created,
     });
   } catch (error) {
     console.error("Error adding notification:", error);
@@ -164,6 +156,8 @@ export const updateNotification = async (
         ...(updates.message !== undefined && { message: updates.message }),
         ...(updates.type !== undefined && { type: updates.type }),
         ...(updates.metadata !== undefined && { metadata: updates.metadata }),
+        ...(updates.metadata !== undefined && updates.metadata?.notificationImage !== undefined && { notificationImage: updates.metadata.notificationImage }),
+        ...(updates.notificationImage !== undefined && { notificationImage: updates.notificationImage }),
         isRead: isOnlyMarkingRead ? updates.isRead : false,
         updatedAt: isOnlyMarkingRead ? existing.updatedAt || existing.createdAt : new Date(),
       },

@@ -88,6 +88,7 @@ model Appointment {
   doctorId           String?
   duration           Int?
   notes              String?
+  treatmentNotes     String?
   serviceType        String?
   status             String?
   cancellationReason String?
@@ -111,16 +112,16 @@ model Appointment {
 }
 
 model AppointmentLog {
-  id             String    @id
-  appointmentId  String
-  previousState  Json
-  newState       Json
-  changedBy      String
-  changedByName  String?
-  changedAt      DateTime?
-  changeType     String
-  amount         Float?
-  notes          String?
+  id            String    @id
+  appointmentId String
+  previousState Json
+  newState      Json
+  changedBy     String
+  changedByName String?
+  changedAt     DateTime?
+  changeType    String
+  amount        Float?
+  notes         String?
 
   @@index([appointmentId])
   @@index([changedAt])
@@ -128,20 +129,20 @@ model AppointmentLog {
 }
 
 model Payment {
-  id            String    @id
-  appointmentId String
-  patientId     String?
-  amount        Float
-  method        String
-  date          String
+  id                  String    @id
+  appointmentId       String
+  patientId           String?
+  amount              Float
+  method              String
+  date                String
   appointmentSnapshot Json?
-  transactionId String?
-  notes         String?
-  status        String?
-  createdAt     DateTime?
-  updatedAt     DateTime?
-  deleted       Boolean   @default(false)
-  deletedAt     DateTime?
+  transactionId       String?
+  notes               String?
+  status              String?
+  createdAt           DateTime?
+  updatedAt           DateTime?
+  deleted             Boolean   @default(false)
+  deletedAt           DateTime?
 
   @@index([appointmentId])
   @@index([patientId])
@@ -205,7 +206,7 @@ model Staff {
 }
 
 model StaffFinancialRecord {
-  id                String @id
+  id                String  @id
   staffId           String
   staffName         String
   type              String
@@ -221,54 +222,57 @@ model StaffFinancialRecord {
 }
 
 model StaffAttendance {
-  id            String @id
+  id            String  @id
   staffId       String
   staffName     String
   date          String?
   status        String?
-  hoursWorked   Float  @default(0)
-  daysPresent   Int    @default(0)
-  daysAbsent    Int    @default(0)
-  overtimeHours Float  @default(0)
+  hoursWorked   Float   @default(0)
+  daysPresent   Int     @default(0)
+  daysAbsent    Int     @default(0)
+  overtimeHours Float   @default(0)
 
   @@index([staffId])
   @@map("staff_attendance")
 }
 
 model Notification {
-  id        String    @id @default(uuid())
-  userId    String
-  title     String
-  message   String
-  type      String
-  createdAt DateTime?
-  updatedAt DateTime?
-  isRead    Boolean   @default(false)
-  link      String?
-  isLog     Boolean   @default(false)
-  metadata  Json?
-  deleted   Boolean   @default(false)
-  deletedAt DateTime?
+  id                String    @id @default(uuid())
+  userId            String
+  title             String
+  message           String
+  type              String
+  appointmentId     String?
+  createdAt         DateTime?
+  updatedAt         DateTime?
+  isRead            Boolean   @default(false)
+  link              String?
+  isLog             Boolean   @default(false)
+  metadata          Json?
+  notificationImage String?
+  deleted           Boolean   @default(false)
+  deletedAt         DateTime?
 
   @@index([userId])
+  @@index([appointmentId])
   @@index([type])
   @@index([isRead])
   @@map("notifications")
 }
 
 model FinanceRecord {
-  id          String    @id
-  patientId   String?
-  type        String
-  amount      Float
-  date        String
+  id                  String    @id
+  patientId           String?
+  type                String
+  amount              Float
+  date                String
   appointmentSnapshot Json?
-  description String?
-  isSeeding   Boolean?
-  createdAt   DateTime?
-  updatedAt   DateTime?
-  deleted     Boolean   @default(false)
-  deletedAt   DateTime?
+  description         String?
+  isSeeding           Boolean?
+  createdAt           DateTime?
+  updatedAt           DateTime?
+  deleted             Boolean   @default(false)
+  deletedAt           DateTime?
 
   @@index([patientId])
   @@index([type])
@@ -284,11 +288,18 @@ model DetailedExpense {
   amount        Float
   vendor        String?
   paymentMethod String?
+  paymentDate   String?
   status        String?
   recurring     Boolean @default(false)
+  createdAt     DateTime @default(now())
+  inventoryItemId   String?
+  inventoryQuantity Float?
 
   @@index([category])
   @@index([date])
+  @@index([paymentDate])
+  @@index([createdAt])
+  @@index([inventoryItemId])
   @@map("detailed_expenses")
 }
 
@@ -308,6 +319,63 @@ model InventoryItem {
 
   @@index([item])
   @@map("inventory")
+}
+
+model ExpenseLog {
+  id            String   @id
+  expenseId     String
+  previousState Json
+  newState      Json
+  changedBy     String
+  changedByName String?
+  changedByRole String?
+  changedAt     DateTime @default(now())
+  changeType    String
+  amount        Float?
+  notes         String?
+
+  @@index([expenseId])
+  @@index([changedAt])
+  @@map("expense_logs")
+}
+
+model InventoryLog {
+  id              String   @id
+  inventoryItemId String
+  previousState   Json
+  newState        Json
+  changedBy       String
+  changedByName   String?
+  changedByRole   String?
+  changedAt       DateTime @default(now())
+  changeType      String
+  quantityChange  Float?
+  notes           String?
+
+  @@index([inventoryItemId])
+  @@index([changedAt])
+  @@map("inventory_logs")
+}
+
+model PayrollLog {
+  id            String   @id
+  staffId       String
+  payrollMonth  String?
+  payrollRecordId String?
+  previousState Json
+  newState      Json
+  changedBy     String
+  changedByName String?
+  changedByRole String?
+  changedAt     DateTime @default(now())
+  changeType    String
+  amount        Float?
+  notes         String?
+
+  @@index([staffId])
+  @@index([payrollMonth])
+  @@index([changedAt])
+  @@map("payroll_logs")
 }
 
 model Questionnaire {
