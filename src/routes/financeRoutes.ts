@@ -18,6 +18,7 @@ import {
   addPayrollBonus,
   configurePayrollEntry,
   payPayrollEntry,
+  unpayPayrollEntry,
   getRecentTransactions,
 } from "../controllers/financeController";
 import { requireAuth } from "../middleware/authMiddleware";
@@ -72,6 +73,9 @@ router.put("/payroll/:id/configure", configurePayrollEntry);
 
 // POST - Mark a staff member's payroll entry paid
 router.post("/payroll/:id/pay", payPayrollEntry);
+
+// POST - Reverse a staff member's payroll payment back to pending
+router.post("/payroll/:id/unpay", unpayPayrollEntry);
 
 // GET - Get payroll data - MORE SPECIFIC ROUTE FIRST
 router.get("/payroll", getPayroll);
