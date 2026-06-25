@@ -19,11 +19,12 @@ const configuredOrigins = [
 const allowedOrigins = new Set([
   "http://localhost:3000",
   "https://villahermosadentalclinic.vercel.app",
+  "https://villahermosadentalclinic-client-2-0.vercel.app",
   ...configuredOrigins,
 ]);
 
 const vercelDeploymentOrigin =
-  /^https:\/\/villahermosadentalclinic(?:-[a-z0-9]+)?-lourinsis-projects\.vercel\.app$/;
+  /^https:\/\/villahermosadentalclinic(?:-[a-z0-9-]+)?-lourinsis-projects\.vercel\.app$/;
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, callback) {

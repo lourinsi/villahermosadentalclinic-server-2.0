@@ -1072,6 +1072,7 @@ const buildPayrollData = async (payrollMonth: string) => {
     const staffBaseSalary = toFiniteNumber(staff.baseSalary);
     const baseSalary = salaryRecord ? toFiniteNumber(salaryRecord.amount) : staffBaseSalary;
     const total = baseSalary + bonus;
+    const status = salaryRecord?.status || (baseSalary > 0 || Math.abs(bonus) > 0 ? "pending" : "paid");
 
     return {
       id: staff.id,
@@ -1082,9 +1083,9 @@ const buildPayrollData = async (payrollMonth: string) => {
       bonus,
       managedAdjustment: managedAdjustmentRecord ? toFiniteNumber(managedAdjustmentRecord.amount) : 0,
       total,
-      status: salaryRecord?.status || (baseSalary > 0 || Math.abs(bonus) > 0 ? "pending" : "paid"),
+      status,
       salaryRecordId: salaryRecord?.id,
-      paymentDate: salaryRecord?.date,
+      paymentDate: normalizeCodeValue(status) === "paid" ? salaryRecord?.date : undefined,
       month: payrollMonth,
     };
   });
@@ -1262,6 +1263,78 @@ export const payPayrollEntry = async (
     res.status(500).json({
       success: false,
       message: "Error paying payroll entry",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const unpayPayrollEntry = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<Payroll | null>>
+) => {
+  try {
+    const staffId = req.params.id;
+    const payrollMonth = normalizePayrollMonth(req.body?.month);
+    const actor = getFinanceHistoryActor(req);
+    const previousState = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || {};
+
+    const staff = await prisma.staff.findUnique({ where: { id: staffId } });
+    if (!staff || staff.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found",
+      });
+    }
+
+    const existingSalaryRecord = await prisma.staffFinancialRecord.findFirst({
+      where: {
+        staffId,
+        date: { startsWith: `${payrollMonth}-` },
+        OR: [
+          { type: "salary" },
+          { type: "payroll" },
+          { type: "monthly_salary" },
+        ],
+      },
+    });
+
+    if (!existingSalaryRecord) {
+      return res.status(404).json({
+        success: false,
+        message: "Payroll payment record not found",
+      });
+    }
+
+    await prisma.staffFinancialRecord.update({
+      where: { id: existingSalaryRecord.id },
+      data: {
+        staffName: staff.name,
+        status: "pending",
+        notes: existingSalaryRecord.notes || `${monthLabel(payrollMonth)} salary`,
+      },
+    });
+
+    const data = (await buildPayrollData(payrollMonth)).find((entry) => entry.id === staffId) || null;
+    if (data && payrollStateChanged(previousState, data)) {
+      await createFinanceHistoryLog(prisma, {
+        entityType: "payroll",
+        entityId: staffId,
+        context: payrollMonth,
+        action: "unpay",
+        previousState,
+        newState: data,
+        amount: toFiniteNumber(data.total),
+        summary: `${data.name} payroll payment cancelled`,
+        ...actor,
+      });
+    }
+
+    res.json({ success: true, message: "Payroll payment reversed successfully", data });
+  } catch (error) {
+    console.error("[FINANCE UNPAY_PAYROLL_ENTRY] Error reversing payroll payment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error reversing payroll payment",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
