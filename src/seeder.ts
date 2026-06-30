@@ -9,6 +9,7 @@ import { APPOINTMENT_STATUSES } from "./shared/appointmentStatuses";
 import { PAYMENT_STATUSES } from "./shared/paymentStatuses";
 import {
   APPOINTMENT_TYPES,
+  OTHER_APPOINTMENT_TYPE_INDEX,
   getAppointmentPrice,
   getAppointmentTypeName,
 } from "./utils/appointment-types";
@@ -42,7 +43,7 @@ const monthFromNow = (offsetMonths: number): string => {
 
 const appointmentTypeIndex = (typeName: string): number => {
   const index = APPOINTMENT_TYPES.indexOf(typeName);
-  return index >= 0 ? index : APPOINTMENT_TYPES.length - 1;
+  return index >= 0 ? index : OTHER_APPOINTMENT_TYPE_INDEX;
 };
 
 const createRecords = async (model: SeedModel, records: any[]) => {
