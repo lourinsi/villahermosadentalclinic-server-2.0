@@ -1,5 +1,5 @@
 import { Appointment } from "../types/appointment";
-import { isPatientCartStatus } from "../constants/appointmentStatuses";
+import { isPatientCartStatus, normalizeStatus } from "../constants/appointmentStatuses";
 import { normalizeAppointmentDuration } from "./appointment-durations";
 import { areSameDoctorIdentity, DoctorIdentity } from "./doctorIdentity";
 
@@ -27,13 +27,15 @@ export const hasConflict = (
   const newEnd = newStart + duration;
 
   return appointments.some((apt) => {
+    const normalizedStatus = normalizeStatus(apt.status);
     if (
       apt.deleted ||
       apt.id === excludeId ||
       apt.date !== newDate ||
-      apt.status === "cancelled" ||
-      apt.status === "completed" ||
-      isPatientCartStatus(apt.status) // Cart appointments don't block others until paid/scheduled
+      normalizedStatus === "cancelled" ||
+      normalizedStatus === "completed" ||
+      normalizedStatus === "deleted" ||
+      isPatientCartStatus(normalizedStatus) // Cart appointments don't block others until paid/scheduled
     ) {
       return false;
     }

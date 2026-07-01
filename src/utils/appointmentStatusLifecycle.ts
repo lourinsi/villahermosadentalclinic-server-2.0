@@ -8,7 +8,7 @@ import { DoctorIdentity, withResolvedDoctor } from "./doctorIdentity";
 import { PatientIdentity, withResolvedPatient } from "./patientIdentity";
 
 const TBD_STATUS = "tbd";
-const FINAL_STATUSES = new Set(["cancelled", "completed"]);
+const FINAL_STATUSES = new Set(["cancelled", "completed", "deleted"]);
 const PAST_APPOINTMENT_STATUSES = new Set([TBD_STATUS, ...FINAL_STATUSES]);
 
 interface LifecycleResult {

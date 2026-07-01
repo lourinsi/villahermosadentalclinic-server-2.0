@@ -9,6 +9,7 @@ const appointmentStatusList = [
   { key: 4, value: "cancelled", label: "Cancelled", description: "Appointment cancelled" },
   { key: 5, value: "completed", label: "Completed", description: "Appointment completed" },
   { key: 6, value: "tbd", label: "TBD", description: "Past appointment awaiting completion status" },
+  { key: 7, value: "deleted", label: "Deleted", description: "Appointment hidden from receptionist views" },
 ];
 
 export const APPOINTMENT_STATUS_KEYS = {
@@ -57,10 +58,12 @@ export const LEGACY_STATUS_MAP: Record<string, string> = {
   halfpaid: "half-paid",
   "half-paid": "half-paid",
   reserved: "reserved",
+  canceled: "cancelled",
   cancelled: "cancelled",
   scheduled: "scheduled",
   completed: "completed",
   tbd: "tbd",
+  deleted: "deleted",
 } as const;
 
 export const getStatusOptions = () =>

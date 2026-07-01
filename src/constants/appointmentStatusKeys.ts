@@ -14,6 +14,8 @@ export const APPOINTMENT_STATUS_KEYS = {
   RESERVED: 3,
   CANCELLED: 4,
   COMPLETED: 5,
+  TBD: 6,
+  DELETED: 7,
 } as const;
 
 // Map for reference only (keys are what matter)
@@ -23,6 +25,8 @@ export const APPOINTMENT_STATUS_LABELS: Record<number, string> = {
   3: "Reserved",
   4: "Cancelled",
   5: "Completed",
+  6: "TBD",
+  7: "Deleted",
 } as const;
 
 // Map for storage values (what gets saved to DB)
@@ -32,4 +36,6 @@ export const APPOINTMENT_STATUS_VALUES: Record<number, string> = {
   3: "reserved",
   4: "cancelled",
   5: "completed",
+  6: "tbd",
+  7: "deleted",
 } as const;

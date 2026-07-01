@@ -177,6 +177,124 @@ const isAdminRole = (req: Request): boolean => {
 const isCashPaymentMethod = (method: unknown): boolean =>
   String(method || "").trim().toLowerCase() === "cash";
 
+type PaymentStatusValue = NonNullable<Appointment["paymentStatus"]>;
+
+const PAYMENT_STATUS_ALIASES: Record<string, PaymentStatusValue | "pay-at-clinic"> = {
+  "fully-paid": "paid",
+  "full-paid": "paid",
+  "paid-in-full": "paid",
+  halfpaid: "half-paid",
+  half_paid: "half-paid",
+  partial: "half-paid",
+  "partial-paid": "half-paid",
+  "partially-paid": "half-paid",
+  payatclinic: "pay-at-clinic",
+  "pay-at-clinic": "pay-at-clinic",
+  overpaid: "over-paid",
+  "over-paid": "over-paid",
+};
+
+const hasOwnField = (value: object, field: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, field);
+
+const normalizePaymentStatusValue = (status: unknown): string => {
+  const normalized = String(status ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-");
+  if (!normalized) return "";
+
+  return PAYMENT_STATUS_ALIASES[normalized] || normalized;
+};
+
+const toPaymentNumber = (value: unknown, fallback = 0): number => {
+  if (value === null || value === undefined || value === "") return fallback;
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const normalizePaymentDateInput = (value: unknown): string => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return "";
+
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${parsed.getFullYear()}-${month}-${day}`;
+};
+
+const isFuturePaymentDate = (dateValue: string, now: Date = new Date()): boolean => {
+  const paymentDate = normalizePaymentDateInput(dateValue);
+  if (!paymentDate) return false;
+
+  const [year, month, day] = paymentDate.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return date.getTime() > today.getTime();
+};
+
+const buildPaymentDatedAppointmentSnapshot = <T extends Record<string, any>>(
+  appointment: T,
+  paymentDate: string,
+  amount: number
+): T => {
+  if (amount <= 0 || !paymentDate) return appointment;
+  return { ...appointment, paymentDate };
+};
+
+const getAppointmentTotalDue = (appointment: Pick<Appointment, "price" | "discount">): number =>
+  Math.max(0, toPaymentNumber(appointment.price) - toPaymentNumber(appointment.discount));
+
+const getStoredAppointmentTotalPaid = (appointment: Appointment): number => {
+  if (appointment.totalPaid !== undefined && appointment.totalPaid !== null) {
+    return Math.max(0, toPaymentNumber(appointment.totalPaid));
+  }
+
+  const totalDue = getAppointmentTotalDue(appointment);
+  const balance = toPaymentNumber(appointment.balance, totalDue);
+  return Math.max(0, totalDue - balance);
+};
+
+const getPaymentStatusFromTotals = (totalPaid: number, balance: number): PaymentStatusValue => {
+  if (balance <= 0) return "paid";
+  if (totalPaid > 0) return "half-paid";
+  return "unpaid";
+};
+
+const getProjectedPaymentTotals = (
+  oldAppointment: Appointment,
+  updates: Partial<Appointment>,
+  currentTotalPaid: number
+) => {
+  const updateRecord = updates as Record<string, unknown>;
+  const oldPrice = toPaymentNumber(oldAppointment.price);
+  const oldDiscount = toPaymentNumber(oldAppointment.discount);
+  const nextPrice = hasOwnField(updates, "price")
+    ? toPaymentNumber(updateRecord.price, oldPrice)
+    : oldPrice;
+  const nextDiscount = hasOwnField(updates, "discount")
+    ? toPaymentNumber(updateRecord.discount, oldDiscount)
+    : oldDiscount;
+  const nextTotalPaid = hasOwnField(updates, "totalPaid")
+    ? Math.max(0, toPaymentNumber(updateRecord.totalPaid, currentTotalPaid))
+    : currentTotalPaid;
+  const computedBalance = Math.max(0, nextPrice - nextDiscount - nextTotalPaid);
+  const nextBalance = hasOwnField(updates, "balance")
+    ? Math.max(0, toPaymentNumber(updateRecord.balance, computedBalance))
+    : computedBalance;
+
+  return {
+    totalPaid: nextTotalPaid,
+    balance: nextBalance,
+    computedBalance,
+  };
+};
+
 const appointmentData = (appointment: Appointment, previousState?: Appointment) => ({
   patientId: appointment.patientId,
   patientName: appointment.patientName,
@@ -279,7 +397,10 @@ const timeToMinutes = (timeStr: string): number => {
 };
 
 const REQUEST_APPOINTMENT_STATUSES = new Set(["reserved", "to-pay", "half-paid", "tbd"]);
-const HISTORY_APPOINTMENT_STATUSES = new Set(["scheduled", "completed", "cancelled"]);
+const HISTORY_APPOINTMENT_STATUSES = new Set(["scheduled", "completed", "cancelled", "deleted"]);
+
+const isDeletedAppointmentStatus = (status?: string | null): boolean =>
+  normalizeStatus(status) === "deleted";
 
 const getAppointmentSortValue = (
   appointment: Appointment,
@@ -336,7 +457,11 @@ const cancelOverlappingPendingAppointments = async (
   doctorStaff: DoctorIdentity[] = []
 ) => {
   const normalizedNewStatus = normalizeStatus(newAppointment.status);
-  if (isPatientCartStatus(normalizedNewStatus) || normalizedNewStatus === "cancelled") return;
+  if (
+    isPatientCartStatus(normalizedNewStatus) ||
+    normalizedNewStatus === "cancelled" ||
+    normalizedNewStatus === "deleted"
+  ) return;
 
   const newStart = timeToMinutes(newAppointment.time);
   const newEnd = newStart + normalizeAppointmentDuration(newAppointment.duration);
@@ -345,6 +470,7 @@ const cancelOverlappingPendingAppointments = async (
     if (
       apt.deleted ||
       apt.id === newAppointment.id ||
+      isDeletedAppointmentStatus(apt.status) ||
       apt.date !== newAppointment.date ||
       !isPatientCartStatus(apt.status)
     ) {
@@ -406,6 +532,21 @@ export const addAppointment = async (
     const appointmentInput: Appointment = req.body;
     const appointmentLogNotes = (req.body as any).logNotes || appointmentInput.notes || "";
     const isSeeding = req.body.isSeeding === true;
+    const requestedPaymentDate = normalizePaymentDateInput((req.body as any).paymentDate);
+    const requestedInitialPaymentAmount = toPaymentNumber(appointmentInput.totalPaid);
+
+    if (requestedInitialPaymentAmount > 0 && (req.body as any).paymentDate && !requestedPaymentDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment date",
+      });
+    }
+    if (requestedInitialPaymentAmount > 0 && isFuturePaymentDate(requestedPaymentDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment date cannot be in the future",
+      });
+    }
 
     const requestedStatus = getPastRestrictedAppointmentStatus(
       appointmentInput.date,
@@ -507,10 +648,16 @@ export const addAppointment = async (
       );
     }
 
+    const createdLogSnapshot = buildPaymentDatedAppointmentSnapshot(
+      created,
+      requestedPaymentDate,
+      created.totalPaid || 0
+    );
+
     await createAppointmentLog(
       created.id!,
       { status: "none", paymentStatus: "none", price: 0, balance: 0, totalPaid: 0 } as any,
-      created,
+      createdLogSnapshot,
       changedBy,
       changedByName,
       "update",
@@ -582,7 +729,12 @@ export const getAppointments = async (
     const pageNum = Math.max(1, parseInt(page || "1", 10) || 1);
     const limitNum = Math.max(1, Math.min(100, parseInt(limit || "20", 10) || 20));
 
+    const canSeeDeletedAppointments = isAdminRole(req);
     let filtered = appointments.filter((appointment) => !appointment.deleted);
+
+    if (!canSeeDeletedAppointments) {
+      filtered = filtered.filter((appointment) => !isDeletedAppointmentStatus(appointment.status));
+    }
 
     if (isStaffRole(req)) {
       filtered = filtered.filter((appointment) => !isPatientCartStatus(appointment.status));
@@ -754,7 +906,7 @@ export const getPublicAppointmentAvailability = async (
 
     filtered = filtered.filter((appointment) => {
       const status = normalizeStatus(appointment.status);
-      return status !== "cancelled" && !isPatientCartStatus(status);
+      return status !== "cancelled" && status !== "deleted" && !isPatientCartStatus(status);
     });
 
     res.json({
@@ -793,7 +945,11 @@ export const getAppointmentById = async (
       await prisma.appointment.findUnique({ where: { id: req.params.id } })
     );
 
-    if (!appointment || appointment.deleted) {
+    if (
+      !appointment ||
+      appointment.deleted ||
+      (!isAdminRole(req) && isDeletedAppointmentStatus(appointment.status))
+    ) {
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
 
@@ -835,8 +991,19 @@ export const updateAppointment = async (
     const doctorStaff = await getActiveDoctorStaff();
     const { id } = req.params;
     const updates: Partial<Appointment> = req.body;
+    const requestedPaymentDate = normalizePaymentDateInput((req.body as any).paymentDate);
+    if ((req.body as any).paymentDate && !requestedPaymentDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment date",
+      });
+    }
     const oldAppointment = appointments.find((appointment) => appointment.id === id);
-    if (!oldAppointment || (isStaffRole(req) && isPatientCartStatus(oldAppointment.status))) {
+    if (
+      !oldAppointment ||
+      (isStaffRole(req) && isPatientCartStatus(oldAppointment.status)) ||
+      (!isAdminRole(req) && isDeletedAppointmentStatus(oldAppointment.status))
+    ) {
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
     if (
@@ -849,23 +1016,35 @@ export const updateAppointment = async (
         message: "Cash payments can only be recorded by admins or doctors",
       });
     }
+
+    const derivedTotalPaid = getStoredAppointmentTotalPaid(oldAppointment);
     if (
-      Object.prototype.hasOwnProperty.call(updates, "paymentStatus") &&
-      updates.paymentStatus !== oldAppointment.paymentStatus &&
+      hasOwnField(updates, "paymentStatus") &&
+      normalizePaymentStatusValue(updates.paymentStatus) !== normalizePaymentStatusValue(oldAppointment.paymentStatus || "unpaid") &&
       !isAdminRole(req)
     ) {
-      return res.status(403).json({
-        success: false,
-        message: "Only admins can edit payment statuses directly",
-      });
-    }
+      const projectedPaymentTotals = getProjectedPaymentTotals(oldAppointment, updates, derivedTotalPaid);
+      const expectedPaymentStatus = getPaymentStatusFromTotals(
+        projectedPaymentTotals.totalPaid,
+        projectedPaymentTotals.balance
+      );
+      const paymentAmount = projectedPaymentTotals.totalPaid - derivedTotalPaid;
+      const requestedPaymentStatus = normalizePaymentStatusValue(updates.paymentStatus);
+      const balanceMatchesTotals = Math.abs(projectedPaymentTotals.balance - projectedPaymentTotals.computedBalance) < 0.01;
+      const isDerivedPaymentStatusChange =
+        paymentAmount > 0 &&
+        balanceMatchesTotals &&
+        requestedPaymentStatus === normalizePaymentStatusValue(expectedPaymentStatus);
 
-    const derivedTotalPaid =
-      oldAppointment.totalPaid !== undefined
-        ? oldAppointment.totalPaid
-        : oldAppointment.price !== undefined && oldAppointment.balance !== undefined
-          ? Math.max(0, oldAppointment.price - (oldAppointment.discount || 0) - oldAppointment.balance)
-          : 0;
+      if (!isDerivedPaymentStatusChange) {
+        return res.status(403).json({
+          success: false,
+          message: "Only admins can edit payment statuses directly",
+        });
+      }
+
+      updates.paymentStatus = expectedPaymentStatus;
+    }
 
     const updatedAppointment: Appointment = {
       ...oldAppointment,
@@ -926,10 +1105,15 @@ export const updateAppointment = async (
       }
     }
 
-    if ((updates as any).price !== undefined || (updates as any).discount !== undefined) {
+    if (
+      hasOwnField(updates, "price") ||
+      hasOwnField(updates, "discount") ||
+      hasOwnField(updates, "totalPaid")
+    ) {
       const price = updatedAppointment.price || 0;
       const discount = (updatedAppointment as any).discount || 0;
       updatedAppointment.balance = Math.max(0, price - discount - (updatedAppointment.totalPaid || 0));
+      updates.balance = updatedAppointment.balance;
     }
 
     const changedBy = (req as any).user?.id || (req as any).user?.username || "admin";
@@ -944,6 +1128,13 @@ export const updateAppointment = async (
     const oldTotalPaidValue = derivedTotalPaid || 0;
     const newTotalPaidValue = updatedAppointment.totalPaid || 0;
     const paymentAmount = newTotalPaidValue - oldTotalPaidValue;
+
+    if (paymentAmount > 0 && isFuturePaymentDate(requestedPaymentDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment date cannot be in the future",
+      });
+    }
 
     let logChangeType: any = "update";
     if (paymentAmount > 0) logChangeType = "payment";
@@ -972,7 +1163,8 @@ export const updateAppointment = async (
         data: buildAppointmentUpdateData(updatedAppointment) as any,
       })
     );
-    await createAppointmentLog(id, oldAppointment, saved, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
+    const savedLogSnapshot = buildPaymentDatedAppointmentSnapshot(saved, requestedPaymentDate, paymentAmount);
+    await createAppointmentLog(id, oldAppointment, savedLogSnapshot, changedBy, changedByName, logChangeType, paymentAmount, updates.notes);
     const oldPatientRecord = oldAppointment.patientId === updatedAppointment.patientId
       ? patientRecord
       : await getActivePatientIdentity(oldAppointment.patientId);
@@ -1034,7 +1226,7 @@ export const updateAppointment = async (
 
 export const deleteAppointment = async (
   req: Request<IdParams>,
-  res: Response<ApiResponse<null>>
+  res: Response<ApiResponse<Appointment | null>>
 ) => {
   try {
     const doctorStaff = await getActiveDoctorStaff();
@@ -1046,28 +1238,50 @@ export const deleteAppointment = async (
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
 
+    if (isDeletedAppointmentStatus(appointment.status)) {
+      return res.status(404).json({ success: false, message: "Appointment not found" });
+    }
+
+    if (normalizeStatus(appointment.status) !== "cancelled") {
+      return res.status(400).json({
+        success: false,
+        message: "Only cancelled appointments can be deleted",
+      });
+    }
+
     const deletedAppointment = toAppointment(await prisma.appointment.update({
       where: { id: req.params.id },
-      data: { status: "cancelled", deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+      data: { status: "deleted", deleted: false, deletedAt: new Date(), updatedAt: new Date() },
     }));
 
     if (appointment.id) {
       const patientRecord = await getActivePatientIdentity(appointment.patientId);
       const notificationAppointment = withResolvedDoctor(
-        withResolvedPatient(appointment as any, patientRecord ? [patientRecord] : []),
+        withResolvedPatient(deletedAppointment as any, patientRecord ? [patientRecord] : []),
         doctorStaff
       ) as Appointment;
       await notifyStatusChange(
         appointment.id,
         "status",
         normalizeStatus(appointment.status),
-        "cancelled",
+        "deleted",
         await resolveRecipients(notificationAppointment),
         appointmentData(notificationAppointment)
       );
     }
 
-    res.json({ success: true, message: "Appointment soft-deleted successfully" });
+    const patientRecord = await getActivePatientIdentity(deletedAppointment.patientId);
+    res.json({
+      success: true,
+      message: "Appointment marked as deleted successfully",
+      data: withResolvedDoctor(
+        withResolvedPatient(
+          { ...deletedAppointment, status: normalizeStatus(deletedAppointment.status) },
+          patientRecord ? [patientRecord] : []
+        ),
+        doctorStaff
+      ) as Appointment,
+    });
   } catch (error) {
     console.error("[APPOINTMENT DELETE] Error deleting appointment:", error);
     res.status(500).json({
@@ -1104,9 +1318,12 @@ export const bookPublicAppointment = async (
       paymentStatus: paymentStatusFromClient,
       totalPaid: totalPaidFromClient,
       paymentMethod: paymentMethodFromClient,
+      paymentDate: paymentDateFromClient,
       price: clientPrice,
       discount: clientDiscount,
     } = req.body;
+    const requestedPaymentDate = normalizePaymentDateInput(paymentDateFromClient);
+    const requestedInitialPaymentAmount = toPaymentNumber(totalPaidFromClient);
 
     if (!firstName || !lastName || !phone || !date || !time || type == null) {
       return res.status(400).json({
@@ -1118,6 +1335,18 @@ export const bookPublicAppointment = async (
       return res.status(403).json({
         success: false,
         message: "Cash payments can only be recorded by admins or doctors",
+      });
+    }
+    if (requestedInitialPaymentAmount > 0 && paymentDateFromClient && !requestedPaymentDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment date",
+      });
+    }
+    if (requestedInitialPaymentAmount > 0 && isFuturePaymentDate(requestedPaymentDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment date cannot be in the future",
       });
     }
 
@@ -1225,10 +1454,16 @@ export const bookPublicAppointment = async (
 
     await notifyAppointmentChange(createdForResponse, "public_request");
 
+    const createdLogSnapshot = buildPaymentDatedAppointmentSnapshot(
+      created,
+      requestedPaymentDate,
+      created.totalPaid || 0
+    );
+
     await createAppointmentLog(
       created.id!,
       { status: "none", paymentStatus: "none", price: 0, balance: 0, totalPaid: 0 } as any,
-      created,
+      createdLogSnapshot,
       "patient",
       patientDisplayName,
       "update",
@@ -1306,7 +1541,11 @@ export const fetchAppointmentLogs = async (req: Request<IdParams>, res: Response
     }
 
     const appointment = await prisma.appointment.findUnique({ where: { id } });
-    if (!appointment || appointment.deleted) return res.status(404).json({ success: false, message: "Appointment not found" });
+    if (
+      !appointment ||
+      appointment.deleted ||
+      (!isAdminRole(req) && isDeletedAppointmentStatus(appointment.status))
+    ) return res.status(404).json({ success: false, message: "Appointment not found" });
 
     const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
     const authUser = (req as any).user;
@@ -1360,7 +1599,11 @@ export const fetchPaymentLogs = async (req: Request<IdParams>, res: Response) =>
     }
 
     const appointment = await prisma.appointment.findUnique({ where: { id } });
-    if (!appointment || appointment.deleted) return res.status(404).json({ success: false, message: "Appointment not found" });
+    if (
+      !appointment ||
+      appointment.deleted ||
+      (!isAdminRole(req) && isDeletedAppointmentStatus(appointment.status))
+    ) return res.status(404).json({ success: false, message: "Appointment not found" });
 
     const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
     const authUser = (req as any).user;

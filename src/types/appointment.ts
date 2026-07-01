@@ -22,6 +22,7 @@ export interface Appointment {
   cancellationReason?: string; // Reason why appointment was cancelled (e.g., "Another appointment was scheduled for this time slot")
   paymentStatus?: "paid" | "unpaid" | "overdue" | "half-paid" | "over-paid";
   paymentMethod?: string; // Payment method (e.g., 'cash', 'card', 'check')
+  paymentDate?: string; // Date the payment was actually made (YYYY-MM-DD)
   balance?: number;
   totalPaid?: number;
   patientFirstName?: string | null;

@@ -74,6 +74,7 @@ export interface RecentTransaction {
   method: string;
   appointmentId?: string;
   appointmentSnapshot?: any;
+  paymentDate?: string;
   logDate?: string;
   changedByName?: string;
   source?: string;

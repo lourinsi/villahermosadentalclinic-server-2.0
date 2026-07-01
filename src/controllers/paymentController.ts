@@ -130,7 +130,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
     const appointment = toAppointment(
       await prisma.appointment.findUnique({ where: { id: appointmentId } })
     );
-    if (!appointment || appointment.deleted) {
+    if (!appointment || appointment.deleted || normalizeStatus(appointment.status) === "deleted") {
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
     const doctorStaff = await getActiveDoctorStaff();
@@ -173,6 +173,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       !isPayAtClinic || payAmount > 0
         ? toPayment(await prisma.payment.create({ data: newPaymentData }))
         : (newPaymentData as Payment);
+    const paymentDate = newPayment.date;
 
     const oldAppointment = { ...appointment };
     const totalPaid = (appointment.totalPaid || 0) + payAmount;
@@ -227,10 +228,16 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       (req as any).user?.username ||
       (changedBy === "admin" ? "Admin" : changedBy);
 
+    const updatedAppointmentWithPaymentDate = {
+      ...updatedAppointment,
+      paymentDate,
+      paymentMethod: method || updatedAppointment.paymentMethod,
+    };
+
     await createAppointmentLog(
       appointmentId,
       oldAppointment,
-      updatedAppointment,
+      updatedAppointmentWithPaymentDate,
       changedBy,
       changedByName,
       "payment",
@@ -253,7 +260,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
 
     const recipients = await resolveRecipients(updatedAppointment);
     const oldAppointmentForNotifications = withResolvedAppointmentReferences(oldAppointment, doctorStaff, patients);
-    const updatedAppointmentForNotifications = withResolvedAppointmentReferences(updatedAppointment, doctorStaff, patients);
+    const updatedAppointmentForNotifications = withResolvedAppointmentReferences(updatedAppointmentWithPaymentDate, doctorStaff, patients);
     if (updatedAppointment.status !== oldStatus) {
       await notifyStatusChange(
         appointmentId,
@@ -425,10 +432,15 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
           (req as any).user?.name ||
           (req as any).user?.username ||
           (changedBy === "admin" ? "Admin" : changedBy);
+        const savedAppointmentWithPaymentDate = {
+          ...savedAppointment,
+          paymentDate: updatedPayment.date || oldPayment.date,
+          paymentMethod: updatedPayment.method || oldPayment.method,
+        };
         await createAppointmentLog(
           oldPayment.appointmentId,
           oldAppointment,
-          savedAppointment,
+          savedAppointmentWithPaymentDate,
           changedBy,
           changedByName,
           "payment",
@@ -449,7 +461,7 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
 
         const recipients = await resolveRecipients(savedAppointment);
         const oldAppointmentForNotifications = withResolvedAppointmentReferences(oldAppointment, doctorStaff, patients);
-        const savedAppointmentForNotifications = withResolvedAppointmentReferences(savedAppointment, doctorStaff, patients);
+        const savedAppointmentForNotifications = withResolvedAppointmentReferences(savedAppointmentWithPaymentDate, doctorStaff, patients);
         if (amountDiff > 0) {
           await notifyPaymentReceived(oldPayment.appointmentId, amountDiff, recipients, appointmentData(savedAppointmentForNotifications, oldAppointmentForNotifications), id);
         }
@@ -470,11 +482,12 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
         data: { balance: { decrement: amountDiff }, updatedAt: new Date() },
       });
 
-      await prisma.financeRecord.updateMany({
-        where: { description: { contains: `Payment ${id}` } },
-        data: { amount: updatedPayment.amount, updatedAt: new Date() },
-      });
     }
+
+    await prisma.financeRecord.updateMany({
+      where: { description: { contains: `Payment ${id}` } },
+      data: { amount: updatedPayment.amount, date: updatedPayment.date, updatedAt: new Date() },
+    });
 
     res.json({ success: true, message: "Payment updated", data: { payment: updatedPayment } });
   } catch (error) {
