@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { Appointment, ApiResponse } from "../types/appointment";
 import {
-  APPOINTMENT_TYPES,
+  OTHER_APPOINTMENT_TYPE_INDEX,
   getAppointmentTypeName,
   getAppointmentPrice,
 } from "../utils/appointment-types";
@@ -471,7 +471,7 @@ export const addAppointment = async (
       });
     }
 
-    if (appointmentInput.type === APPOINTMENT_TYPES.length - 1 && !appointmentInput.customType) {
+    if (appointmentInput.type === OTHER_APPOINTMENT_TYPE_INDEX && !appointmentInput.customType) {
       return res.status(400).json({
         success: false,
         message: "Custom type description is required when 'Other' is selected.",
@@ -677,7 +677,7 @@ export const getAppointments = async (
         price: 0,
         balance: 0,
         totalPaid: 0,
-        customType: appointment.type === APPOINTMENT_TYPES.length - 1 ? "Other" : "",
+        customType: appointment.type === OTHER_APPOINTMENT_TYPE_INDEX ? "Other" : "",
       }));
     }
 

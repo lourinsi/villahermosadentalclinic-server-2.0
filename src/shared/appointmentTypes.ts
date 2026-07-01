@@ -14,7 +14,12 @@ export const APPOINTMENT_TYPES = [
   "Extraction",
   "Whitening",
   "Other",
+  "Dentures",
+  "Crowns",
+  "Braces",
 ];
+
+export const OTHER_APPOINTMENT_TYPE_INDEX = 6;
 
 /**
  * Appointment type details with pricing and duration
@@ -26,24 +31,17 @@ export const APPOINTMENT_TYPE_OPTIONS: AppointmentTypeOption[] = [
   { id: 3, value: "Root Canal", label: "Root Canal", price: 5000, duration: 90 },
   { id: 4, value: "Extraction", label: "Extraction", price: 1500, duration: 60 },
   { id: 5, value: "Whitening", label: "Whitening", price: 3000, duration: 60 },
-  { id: 6, value: "Other", label: "Other", duration: 30 }
+  { id: 6, value: "Other", label: "Other", duration: 30 },
+  { id: 7, value: "Dentures", label: "Dentures", price: 10000, duration: 60 },
+  { id: 8, value: "Crowns", label: "Crowns", price: 8000, duration: 90 },
+  { id: 9, value: "Braces", label: "Braces", price: 50000, duration: 90 },
 ];
 
 export const getAppointmentTypeName = (typeIndex: number, customType?: string): string => {
-  // Type 6 (index) is the "Other" type
-  if (typeIndex === 6) {
+  if (typeIndex === OTHER_APPOINTMENT_TYPE_INDEX) {
     return customType || "Other";
   }
-  // For types 0-5, return the standard type name
-  const standardTypes = [
-    "Routine Cleaning",
-    "Checkup",
-    "Filling",
-    "Root Canal",
-    "Extraction",
-    "Whitening",
-  ];
-  return standardTypes[typeIndex] || "Unknown";
+  return APPOINTMENT_TYPES[typeIndex] || "Unknown";
 };
 
 /**
