@@ -15,6 +15,7 @@ export const DEFAULT_APPOINTMENT_STATUS_COLORS: Record<string, StatusColorClasse
   [CART_APPOINTMENT_STATUS]: { bgColor: "bg-orange-100", textColor: "text-orange-700" },
   reserved: { bgColor: "bg-amber-100", textColor: "text-amber-700" },
   cancelled: { bgColor: "bg-red-100", textColor: "text-red-700" },
+  deleted: { bgColor: "bg-slate-200", textColor: "text-slate-700" },
   completed: { bgColor: "bg-blue-100", textColor: "text-blue-700" },
   tbd: { bgColor: "bg-violet-100", textColor: "text-violet-700" },
   "to-pay": { bgColor: "bg-cyan-100", textColor: "text-cyan-700" },

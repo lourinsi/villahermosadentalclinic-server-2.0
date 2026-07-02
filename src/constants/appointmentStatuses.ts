@@ -19,6 +19,7 @@ export const APPOINTMENT_STATUS_KEYS = {
   CANCELLED: 4,
   COMPLETED: 5,
   TBD: 6,
+  DELETED: 7,
 } as const;
 
 export const APPOINTMENT_STATUS_VALUES: Record<number, string> = appointmentStatusList.reduce(

@@ -19,7 +19,8 @@ const HIDDEN_PAYMENT_STATUS_VALUES = new Set(["pay-at-clinic"]);
 router.get("/appointments", async (req: Request, res: Response) => {
   try {
     const config = await prisma.statusConfig.findUnique({ where: { key: "appointment" } });
-    const rawStatuses = Array.isArray(config?.value) ? config.value : APPOINTMENT_STATUSES;
+    const configuredStatuses = Array.isArray(config?.value) ? config.value : [];
+    const rawStatuses = [...configuredStatuses, ...APPOINTMENT_STATUSES];
     const appointmentStatusesByValue = new Map<string, any>();
 
     for (const status of rawStatuses as any[]) {
