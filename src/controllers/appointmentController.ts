@@ -1311,8 +1311,10 @@ export const deleteAppointment = async (
 ) => {
   try {
     const doctorStaff = await getActiveDoctorStaff();
+    const appointmentId = req.params.id;
+    const hardDeleteRequested = String(req.query.hardDelete || "").toLowerCase() === "true";
     const appointment = toAppointment(
-      await prisma.appointment.findUnique({ where: { id: req.params.id } })
+      await prisma.appointment.findUnique({ where: { id: appointmentId } })
     );
 
     if (!appointment || (isStaffRole(req) && isPatientCartStatus(appointment.status))) {
@@ -1320,7 +1322,52 @@ export const deleteAppointment = async (
     }
 
     if (isDeletedAppointmentStatus(appointment.status)) {
-      return res.status(404).json({ success: false, message: "Appointment not found" });
+      if (!isAdminRole(req)) {
+        return res.status(404).json({ success: false, message: "Appointment not found" });
+      }
+
+      if (!hardDeleteRequested) {
+        return res.status(400).json({
+          success: false,
+          message: "Appointment is already deleted. Confirm hard delete to permanently remove it.",
+        });
+      }
+
+      const payments = await prisma.payment.findMany({
+        where: { appointmentId },
+        select: { id: true },
+      });
+      const paymentIds = payments.map((payment) => payment.id);
+      const financeRecordFilters: any[] = [
+        { description: { contains: appointmentId } },
+        { appointmentSnapshot: { path: ["id"], equals: appointmentId } },
+      ];
+
+      for (const paymentId of paymentIds) {
+        financeRecordFilters.push({ description: { contains: paymentId } });
+      }
+
+      await prisma.$transaction([
+        prisma.paymentLog.deleteMany({ where: { appointmentId } }),
+        prisma.appointmentLog.deleteMany({ where: { appointmentId } }),
+        prisma.financeRecord.deleteMany({ where: { OR: financeRecordFilters } }),
+        prisma.payment.deleteMany({ where: { appointmentId } }),
+        prisma.notification.deleteMany({
+          where: {
+            OR: [
+              { appointmentId },
+              { metadata: { path: ["appointmentId"], equals: appointmentId } },
+            ],
+          },
+        }),
+        prisma.appointment.delete({ where: { id: appointmentId } }),
+      ]);
+
+      return res.json({
+        success: true,
+        message: "Appointment permanently deleted successfully",
+        data: null,
+      });
     }
 
     if (normalizeStatus(appointment.status) !== "cancelled") {
@@ -1331,7 +1378,7 @@ export const deleteAppointment = async (
     }
 
     const deletedAppointment = toAppointment(await prisma.appointment.update({
-      where: { id: req.params.id },
+      where: { id: appointmentId },
       data: { status: "deleted", deleted: false, deletedAt: new Date(), updatedAt: new Date() },
     }));
 

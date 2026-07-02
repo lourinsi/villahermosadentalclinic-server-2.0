@@ -55,6 +55,13 @@ export const APPOINTMENT_STATUSES: AppointmentStatusOption[] = [
     description: "Past appointment awaiting completion status",
     ...getDefaultAppointmentStatusColors("tbd")
   },
+  {
+    key: 7,
+    value: "deleted",
+    label: "Deleted",
+    description: "Hidden from receptionist views",
+    ...getDefaultAppointmentStatusColors("deleted")
+  },
 ];
 
 /**
