@@ -8,7 +8,7 @@ export interface AppointmentLog {
   changedBy: string; // userId (admin, doctor, or patient)
   changedByName?: string; // name of the user who made the change
   changedAt: string;
-  changeType: 'update' | 'status_change' | 'payment' | 'rescheduled' | 'notes_update';
+  changeType: 'update' | 'status_change' | 'payment' | 'payment_adjustment' | 'rescheduled' | 'notes_update';
   amount?: number;
   notes?: string;
 }

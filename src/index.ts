@@ -85,6 +85,7 @@ import notificationRoutes from "./routes/notificationRoutes";
 import statusesRoutes from "./routes/statuses";
 import { initializeAuth } from "./controllers/authController";
 import questionnaireRoutes from './routes/questionnaires';
+import questionnaireQuestionRoutes from "./routes/questionnaireQuestions";
 import { syncPastAppointmentsToTbd } from "./utils/appointmentStatusLifecycle";
 
 // Routes
@@ -92,6 +93,7 @@ console.log('[ROUTES] Registering API routes...');
 app.use("/api/auth", authRoutes);
 app.use("/api/patients", patientRoutes);
 app.use("/api/questionnaires", questionnaireRoutes);
+app.use("/api/questionnaire-questions", questionnaireQuestionRoutes);
 app.use("/api/appointments", appointmentRoutes);
 app.use("/api/appointment-types", appointmentTypesRoutes);
 app.use("/api/finance", financeRoutes);

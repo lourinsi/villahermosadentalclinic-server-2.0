@@ -45,6 +45,15 @@ const dateKey = (date: Date) => {
   return `${date.getFullYear()}-${month}-${day}`;
 };
 
+const dateOnlyKey = (value: unknown) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  const parsed = normalizeDate(text);
+  return parsed ? dateKey(parsed) : "";
+};
+
 const monthKey = (date: Date) => {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   return `${date.getFullYear()}-${month}`;
@@ -1562,15 +1571,22 @@ export const getRecentTransactions = async (
   res: Response<ApiResponse<RecentTransaction[]>>
 ) => {
   try {
+    const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
+    const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
     const [financeRecords, detailedExpenses, payments, appointmentPaymentLogs] = await Promise.all([
       prisma.financeRecord.findMany({ where: { deleted: false }, orderBy: { date: "desc" } }),
       prisma.detailedExpense.findMany({ orderBy: { date: "desc" } }),
       prisma.payment.findMany({ where: { deleted: false }, orderBy: { date: "desc" } }),
       prisma.appointmentLog.findMany({
         where: {
-          OR: [
-            { changeType: "payment" },
-            { amount: { gt: 0 } },
+          AND: [
+            {
+              OR: [
+                { changeType: "payment" },
+                { amount: { gt: 0 } },
+              ],
+            },
+            { NOT: { changeType: "payment_adjustment" } },
           ],
         },
         orderBy: { changedAt: "desc" },
@@ -1612,19 +1628,24 @@ export const getRecentTransactions = async (
       // Prefer any snapshot stored on the payment record; otherwise fallback to current appointment row
       const appointmentSnapshot = (payment as any).appointmentSnapshot || appointmentSnapshotById.get(payment.appointmentId);
       const serviceName = appointmentSnapshot?.customType || appointmentSnapshot?.serviceType || "appointment";
+      const paymentDate = dateOnlyKey(payment.date) || dateOnlyKey(payment.createdAt);
 
       return {
         id: payment.id,
-        date: payment.date,
+        date: paymentDate,
+        paymentDate,
         description: appointmentSnapshot
           ? `Payment for ${serviceName}`
           : `Payment ${payment.id} for appointment ${payment.appointmentId}`,
         amount: Math.abs(toFiniteNumber(payment.amount)),
         type: "income",
         method: normalizeMethod(payment.method),
+        patientId: payment.patientId,
         appointmentId: payment.appointmentId,
+        transactionId: payment.transactionId,
+        notes: payment.notes,
         appointmentSnapshot,
-        logDate: toIsoDate(payment.updatedAt || payment.createdAt) || payment.date,
+        logDate: payment.createdAt ? toIsoDate(payment.createdAt) : paymentDate,
         source: "payment",
       };
     });
@@ -1637,6 +1658,7 @@ export const getRecentTransactions = async (
       })
       .map((record) => {
         const matchedAppointment = findAppointmentForFinanceRecord(record, financeRecordAppointments);
+        const paymentDate = dateOnlyKey(record.date) || dateOnlyKey(record.createdAt);
         const appointmentId =
           extractAppointmentIdFromSnapshot(record.appointmentSnapshot) ||
           extractAppointmentId(record.description) ||
@@ -1645,7 +1667,8 @@ export const getRecentTransactions = async (
 
         return {
           id: record.id,
-          date: record.date,
+          date: paymentDate,
+          paymentDate,
           description: record.description || `${record.type} record`,
           amount: isExpenseType(record.type)
             ? -Math.abs(toFiniteNumber(record.amount))
@@ -1656,7 +1679,7 @@ export const getRecentTransactions = async (
           appointmentSnapshot: record.appointmentSnapshot
             ? record.appointmentSnapshot
             : (appointmentId ? appointmentSnapshotById.get(appointmentId) || matchedAppointment : matchedAppointment || undefined),
-          logDate: toIsoDate(record.updatedAt || record.createdAt) || record.date,
+          logDate: record.createdAt ? toIsoDate(record.createdAt) : paymentDate,
           source: "finance-record",
         };
       });
@@ -1679,11 +1702,15 @@ export const getRecentTransactions = async (
         };
         const serviceName = getAppointmentServiceName(appointmentSnapshot);
         const changedAt = normalizeDate(log.changedAt) || new Date();
-        const logDate = toIsoDate(log.changedAt) || dateKey(changedAt);
+        const paymentDate = dateOnlyKey(logSnapshot?.paymentDate || (log as any).paymentDate);
+        const createdDate = dateKey(changedAt);
+        const transactionPaymentDate = paymentDate || createdDate;
+        const logDate = toIsoDate(log.changedAt) || transactionPaymentDate;
 
         return {
           id: log.id,
-          date: dateKey(changedAt),
+          date: transactionPaymentDate,
+          paymentDate: transactionPaymentDate,
           description: `Payment for ${serviceName}`,
           amount: Math.abs(toFiniteNumber(log.amount)),
           type: "income",
@@ -1722,7 +1749,7 @@ export const getRecentTransactions = async (
         const bTime = normalizeDate(b.logDate || b.date)?.getTime() || 0;
         return bTime - aTime;
       })
-      .slice(0, 25);
+      .slice(0, resultLimit);
 
     res.json({ success: true, message: "Recent transactions retrieved successfully", data });
   } catch (error) {

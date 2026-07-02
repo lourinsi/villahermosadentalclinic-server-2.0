@@ -36,6 +36,23 @@ const sanitizeJson = (value: unknown): any => {
   return value;
 };
 
+const isReceptionistRole = (role?: unknown): boolean =>
+  String(role || "").toLowerCase().includes("reception");
+
+const getReceptionistNotificationUserIds = async (): Promise<string[]> => {
+  const receptionists = await prisma.staff.findMany({
+    where: { deleted: false },
+    select: { id: true, role: true },
+  });
+
+  return receptionists
+    .filter((staff) => staff.id && isReceptionistRole(staff.role))
+    .map((staff) => String(staff.id));
+};
+
+const getManagementNotificationUserIds = async (): Promise<string[]> =>
+  Array.from(new Set(["admin", ...(await getReceptionistNotificationUserIds())]));
+
 type ChangeSummaryItem = {
   field: string;
   label: string;
@@ -184,17 +201,22 @@ export const notifyAdmin = async (
   type: NotificationType,
   metadata?: Notification["metadata"]
 ) => {
-  if (metadata?.appointmentId) {
-    await updateOrCreateNotificationForAppointment("admin", metadata.appointmentId, {
-      title,
-      message,
-      type,
-      metadata,
-    });
-    return;
-  }
+  const managementRecipients = await getManagementNotificationUserIds();
 
-  await createNotification("admin", title, message, type, metadata);
+  await Promise.all(
+    managementRecipients.map((userId) => {
+      if (metadata?.appointmentId) {
+        return updateOrCreateNotificationForAppointment(userId, metadata.appointmentId, {
+          title,
+          message,
+          type,
+          metadata,
+        });
+      }
+
+      return createNotification(userId, title, message, type, metadata);
+    })
+  );
 };
 
 const formatDoctorName = (name?: string): string => {
@@ -599,7 +621,8 @@ export const resolveRecipients = async (appointment: any): Promise<string[]> => 
     }
   }
 
-  recipients.add("admin");
+  const managementRecipients = await getManagementNotificationUserIds();
+  managementRecipients.forEach((userId) => recipients.add(userId));
   return Array.from(recipients).filter(Boolean);
 };
 
@@ -652,8 +675,18 @@ export const notifyAppointmentChange = async (
     }
   }
 
+  const managementRecipients = await getManagementNotificationUserIds();
+  const doctorText = appointmentDoctorName ? ` with ${formatDoctorName(appointmentDoctorName)}` : "";
+  managementRecipients.forEach((userId) => {
+    if (recipients.has(userId)) return;
+    recipients.set(userId, {
+      title: isRequest ? "New Appointment Request" : "Appointment Update",
+      message: `${appointment.patientName} has a ${appointment.status} appointment${doctorText} for ${serviceName} on ${appointment.date} at ${appointment.time}.`,
+      isAdmin: true,
+    });
+  });
+
   if (!recipients.has("admin")) {
-    const doctorText = appointmentDoctorName ? ` with ${formatDoctorName(appointmentDoctorName)}` : "";
     recipients.set("admin", {
       title: isRequest ? "New Appointment Request" : "Appointment Update",
       message: `${appointment.patientName} has a ${appointment.status} appointment${doctorText} for ${serviceName} on ${appointment.date} at ${appointment.time}.`,
@@ -700,8 +733,9 @@ export const createStatusChangeNotification = async (
   const { patientName, date, time, type, doctor, cancellationReason } = appointmentData;
   const docName = formatDoctorName(doctor);
   const doctorWithSuffix = docName ? ` with ${docName}` : "";
-  const isAdmin = userId === "admin";
-  const isDoctor = userId.startsWith("staff_");
+  const receptionistIds = await getReceptionistNotificationUserIds();
+  const isAdmin = userId === "admin" || receptionistIds.includes(userId);
+  const isDoctor = !isAdmin && userId.startsWith("staff_");
 
   let title = "Appointment Updated";
   let message = "";
@@ -903,11 +937,12 @@ export const notifyPaymentReceived = async (
 ) => {
   const { patientName, date, type, doctor } = appointmentData;
   const formattedAmount = `PHP ${amount.toLocaleString()}`;
+  const receptionistIds = await getReceptionistNotificationUserIds();
 
   await Promise.all(
     recipients.map((userId) => {
-      const isAdmin = userId === "admin";
-      const isDoctor = userId.startsWith("staff_");
+      const isAdmin = userId === "admin" || receptionistIds.includes(userId);
+      const isDoctor = !isAdmin && userId.startsWith("staff_");
       const docName = formatDoctorName(doctor);
       const doctorWithSuffix = docName ? ` with ${docName}` : "";
 

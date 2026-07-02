@@ -1,5 +1,5 @@
 import express from "express";
-import { createPayment, getPaymentsByAppointment, getPaymentsByPatient, updatePayment, deletePayment } from "../controllers/paymentController";
+import { createPayment, getPaymentById, getPaymentsByAppointment, getPaymentsByPatient, updatePayment, deletePayment } from "../controllers/paymentController";
 import { requireAuth } from "../middleware/authMiddleware";
 
 const router = express.Router();
@@ -18,6 +18,9 @@ router.get("/patient/:id", requireAuth, getPaymentsByPatient);
 
 // Create payment (generic)
 router.post("/", requireAuth, createPayment);
+
+// Fetch a single payment
+router.get("/:id", requireAuth, getPaymentById);
 
 // Update payment
 router.put("/:id", requireAuth, updatePayment);

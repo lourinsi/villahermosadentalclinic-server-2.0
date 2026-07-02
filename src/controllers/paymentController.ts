@@ -117,6 +117,254 @@ const isStaffRole = (req: Request): boolean => {
 const isCashPaymentMethod = (method: unknown): boolean =>
   String(method || "").trim().toLowerCase() === "cash";
 
+const todayDateKey = () => new Date().toISOString().split("T")[0];
+
+const dateOnlyKey = (value: unknown): string => {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString().split("T")[0];
+
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().split("T")[0];
+};
+
+const numericAmount = (value: unknown) => {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount) ? amount : 0;
+};
+
+const normalizePaymentMethod = (method?: string | null) =>
+  String(method || "").trim().toLowerCase();
+
+const normalizeEditablePaymentLookupId = (id: string) => {
+  const raw = String(id || "").trim();
+  if (raw.startsWith("payment-log-pay_log_")) return raw.replace(/^payment-log-/, "");
+  if (raw.startsWith("appointment-log-apt_log_")) return raw.replace(/^appointment-log-/, "");
+  return raw;
+};
+
+const getClosestAppointmentPaymentLog = async (paymentLog: any) => {
+  const appointmentLogs = await prisma.appointmentLog.findMany({
+    where: {
+      appointmentId: paymentLog.appointmentId,
+      OR: [
+        { changeType: "payment" },
+        { amount: paymentLog.amount },
+      ],
+    },
+    orderBy: { changedAt: "desc" },
+  });
+
+  const paymentLogTime = paymentLog.changedAt ? new Date(paymentLog.changedAt).getTime() : 0;
+  const amount = Math.abs(numericAmount(paymentLog.amount));
+
+  return (
+    appointmentLogs.find((log) => {
+      const logTime = log.changedAt ? new Date(log.changedAt).getTime() : 0;
+      const timeMatches = paymentLogTime && logTime ? Math.abs(paymentLogTime - logTime) <= 10_000 : true;
+      const amountMatches = Math.abs(Math.abs(numericAmount(log.amount)) - amount) < 0.01;
+      return timeMatches && amountMatches;
+    }) ||
+    appointmentLogs.find((log) => Math.abs(Math.abs(numericAmount(log.amount)) - amount) < 0.01) ||
+    appointmentLogs[0]
+  );
+};
+
+const materializePaymentFromPaymentLog = async (paymentLogId: string): Promise<Payment | null> => {
+  if (!paymentLogId.startsWith("pay_log_")) return null;
+
+  const paymentLog = await prisma.paymentLog.findUnique({ where: { id: paymentLogId } });
+  if (!paymentLog || !paymentLog.appointmentId || numericAmount(paymentLog.amount) <= 0) return null;
+
+  const appointment = toAppointment(await prisma.appointment.findUnique({ where: { id: paymentLog.appointmentId } }));
+  if (!appointment || appointment.deleted || normalizeStatus(appointment.status) === "deleted") return null;
+
+  const matchingAppointmentLog = await getClosestAppointmentPaymentLog(paymentLog);
+  const logSnapshot =
+    matchingAppointmentLog?.newState && typeof matchingAppointmentLog.newState === "object"
+      ? matchingAppointmentLog.newState as any
+      : null;
+  const doctorStaff = await getActiveDoctorStaff();
+  const patients = await getActivePatientIdentities([appointment.patientId]);
+  const appointmentSnapshot = withResolvedAppointmentReferences(
+    {
+      ...appointment,
+      ...(logSnapshot || {}),
+      id: logSnapshot?.id || appointment.id,
+      appointmentId: paymentLog.appointmentId,
+      paymentDate: dateOnlyKey(logSnapshot?.paymentDate) || dateOnlyKey(paymentLog.changedAt) || todayDateKey(),
+      paymentMethod: paymentLog.paymentMethod || logSnapshot?.paymentMethod || appointment.paymentMethod,
+    },
+    doctorStaff,
+    patients
+  );
+  const paymentDate = dateOnlyKey(appointmentSnapshot.paymentDate) || dateOnlyKey(paymentLog.changedAt) || todayDateKey();
+  const paymentAmount = Math.abs(numericAmount(paymentLog.amount));
+  const paymentMethod = paymentLog.paymentMethod || appointmentSnapshot.paymentMethod || "unknown";
+
+  const existingPayments = await prisma.payment.findMany({
+    where: {
+      deleted: false,
+      appointmentId: paymentLog.appointmentId,
+      amount: paymentAmount,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const existing =
+    existingPayments.find((payment) => payment.transactionId === paymentLog.id) ||
+    existingPayments.find((payment) =>
+      dateOnlyKey(payment.date) === paymentDate &&
+      (!payment.method || normalizePaymentMethod(payment.method) === normalizePaymentMethod(paymentMethod))
+    ) ||
+    existingPayments.find((payment) => dateOnlyKey(payment.date) === paymentDate);
+
+  if (existing) return toPayment(existing);
+
+  const payment = toPayment(await prisma.payment.create({
+    data: {
+      id: `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      appointmentId: paymentLog.appointmentId,
+      patientId: appointment.patientId || null,
+      amount: paymentAmount,
+      method: paymentMethod,
+      date: paymentDate,
+      appointmentSnapshot,
+      transactionId: paymentLog.id,
+      notes: paymentLog.changedByName ? `Recorded by ${paymentLog.changedByName}` : "",
+      status: paymentLog.paymentStatus || "completed",
+      createdAt: paymentLog.changedAt || new Date(),
+      updatedAt: new Date(),
+      deleted: false,
+    },
+  }));
+
+  await prisma.financeRecord.create({
+    data: {
+      id: `fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      patientId: appointment.patientId || null,
+      type: "payment",
+      amount: paymentAmount,
+      date: paymentDate,
+      description: `Payment ${payment.id} for appointment ${paymentLog.appointmentId}`,
+      appointmentSnapshot,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deleted: false,
+    },
+  });
+
+  return payment;
+};
+
+const materializePaymentFromAppointmentLog = async (appointmentLogId: string): Promise<Payment | null> => {
+  if (!appointmentLogId.startsWith("apt_log_")) return null;
+
+  const appointmentLog = await prisma.appointmentLog.findUnique({ where: { id: appointmentLogId } });
+  if (!appointmentLog || !appointmentLog.appointmentId || numericAmount(appointmentLog.amount) <= 0) return null;
+  if (String(appointmentLog.changeType || "").toLowerCase() === "payment_adjustment") return null;
+
+  const appointment = toAppointment(await prisma.appointment.findUnique({ where: { id: appointmentLog.appointmentId } }));
+  if (!appointment || appointment.deleted || normalizeStatus(appointment.status) === "deleted") return null;
+
+  const logSnapshot =
+    appointmentLog.newState && typeof appointmentLog.newState === "object"
+      ? appointmentLog.newState as any
+      : null;
+  const doctorStaff = await getActiveDoctorStaff();
+  const patients = await getActivePatientIdentities([appointment.patientId]);
+  const appointmentSnapshot = withResolvedAppointmentReferences(
+    {
+      ...appointment,
+      ...(logSnapshot || {}),
+      id: logSnapshot?.id || appointment.id,
+      appointmentId: appointmentLog.appointmentId,
+      paymentDate: dateOnlyKey(logSnapshot?.paymentDate) || dateOnlyKey(appointmentLog.changedAt) || todayDateKey(),
+      paymentMethod: logSnapshot?.paymentMethod || appointment.paymentMethod,
+    },
+    doctorStaff,
+    patients
+  );
+  const paymentDate = dateOnlyKey(appointmentSnapshot.paymentDate) || dateOnlyKey(appointmentLog.changedAt) || todayDateKey();
+  const paymentAmount = Math.abs(numericAmount(appointmentLog.amount));
+  const paymentMethod = appointmentSnapshot.paymentMethod || "unknown";
+
+  const existingPayments = await prisma.payment.findMany({
+    where: {
+      deleted: false,
+      appointmentId: appointmentLog.appointmentId,
+      amount: paymentAmount,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const existing =
+    existingPayments.find((payment) => payment.transactionId === appointmentLog.id) ||
+    existingPayments.find((payment) =>
+      dateOnlyKey(payment.date) === paymentDate &&
+      (!payment.method || normalizePaymentMethod(payment.method) === normalizePaymentMethod(paymentMethod))
+    ) ||
+    existingPayments.find((payment) => dateOnlyKey(payment.date) === paymentDate);
+
+  if (existing) return toPayment(existing);
+
+  const payment = toPayment(await prisma.payment.create({
+    data: {
+      id: `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      appointmentId: appointmentLog.appointmentId,
+      patientId: appointment.patientId || null,
+      amount: paymentAmount,
+      method: paymentMethod,
+      date: paymentDate,
+      appointmentSnapshot,
+      transactionId: appointmentLog.id,
+      notes: appointmentLog.notes || "",
+      status: appointmentSnapshot.paymentStatus || "completed",
+      createdAt: appointmentLog.changedAt || new Date(),
+      updatedAt: new Date(),
+      deleted: false,
+    },
+  }));
+
+  await prisma.financeRecord.create({
+    data: {
+      id: `fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      patientId: appointment.patientId || null,
+      type: "payment",
+      amount: paymentAmount,
+      date: paymentDate,
+      description: `Payment ${payment.id} for appointment ${appointmentLog.appointmentId}`,
+      appointmentSnapshot,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deleted: false,
+    },
+  });
+
+  return payment;
+};
+
+const findPaymentOrMaterialize = async (id: string): Promise<Payment | null> => {
+  const lookupId = normalizeEditablePaymentLookupId(id);
+  const existing = toPayment(await prisma.payment.findUnique({ where: { id: lookupId } }));
+  if (existing && !existing.deleted) return existing;
+  return (await materializePaymentFromPaymentLog(lookupId)) || materializePaymentFromAppointmentLog(lookupId);
+};
+
+const buildPaymentAdjustmentDetails = (oldPayment: Payment, updatedPayment: Payment, amountDiff: number) => ({
+  isAdjustment: true,
+  paymentId: oldPayment.id,
+  transactionId: updatedPayment.transactionId || oldPayment.transactionId || null,
+  previousAmount: Number(oldPayment.amount || 0),
+  newAmount: Number(updatedPayment.amount || 0),
+  delta: amountDiff,
+  previousMethod: oldPayment.method || null,
+  newMethod: updatedPayment.method || null,
+  previousDate: oldPayment.date || null,
+  newDate: updatedPayment.date || null,
+});
+
 export const createPayment = async (req: Request, res: Response<ApiResponse<any>>) => {
   try {
     const { appointmentId, patientId, amount, method, date, transactionId, notes } = req.body;
@@ -130,7 +378,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
     const appointment = toAppointment(
       await prisma.appointment.findUnique({ where: { id: appointmentId } })
     );
-    if (!appointment || appointment.deleted) {
+    if (!appointment || appointment.deleted || normalizeStatus(appointment.status) === "deleted") {
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
     const doctorStaff = await getActiveDoctorStaff();
@@ -173,6 +421,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       !isPayAtClinic || payAmount > 0
         ? toPayment(await prisma.payment.create({ data: newPaymentData }))
         : (newPaymentData as Payment);
+    const paymentDate = newPayment.date;
 
     const oldAppointment = { ...appointment };
     const totalPaid = (appointment.totalPaid || 0) + payAmount;
@@ -227,10 +476,16 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       (req as any).user?.username ||
       (changedBy === "admin" ? "Admin" : changedBy);
 
+    const updatedAppointmentWithPaymentDate = {
+      ...updatedAppointment,
+      paymentDate,
+      paymentMethod: method || updatedAppointment.paymentMethod,
+    };
+
     await createAppointmentLog(
       appointmentId,
       oldAppointment,
-      updatedAppointment,
+      updatedAppointmentWithPaymentDate,
       changedBy,
       changedByName,
       "payment",
@@ -253,7 +508,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
 
     const recipients = await resolveRecipients(updatedAppointment);
     const oldAppointmentForNotifications = withResolvedAppointmentReferences(oldAppointment, doctorStaff, patients);
-    const updatedAppointmentForNotifications = withResolvedAppointmentReferences(updatedAppointment, doctorStaff, patients);
+    const updatedAppointmentForNotifications = withResolvedAppointmentReferences(updatedAppointmentWithPaymentDate, doctorStaff, patients);
     if (updatedAppointment.status !== oldStatus) {
       await notifyStatusChange(
         appointmentId,
@@ -375,19 +630,43 @@ export const getPaymentsByPatient = async (
   }
 };
 
+export const getPaymentById = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<Payment>>
+) => {
+  try {
+    const normalizedPayment = await findPaymentOrMaterialize(req.params.id);
+
+    if (!normalizedPayment || normalizedPayment.deleted) {
+      return res.status(404).json({ success: false, message: "Payment not found" });
+    }
+
+    const [hydratedPayment] = await hydratePaymentSnapshots([normalizedPayment]);
+    res.json({ success: true, data: hydratedPayment });
+  } catch (error) {
+    console.error("[GET PAYMENT] Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching payment",
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+};
+
 export const updatePayment = async (req: Request<IdParams>, res: Response<ApiResponse<any>>) => {
   try {
     const { id } = req.params;
     const { amount, method, date, transactionId, notes, appointmentId } = req.body;
 
-    const oldPayment = toPayment(await prisma.payment.findUnique({ where: { id } }));
+    const oldPayment = await findPaymentOrMaterialize(id);
     if (!oldPayment || oldPayment.deleted) {
       return res.status(404).json({ success: false, message: "Payment not found" });
     }
+    const paymentId = oldPayment.id;
 
     const updatedPayment = toPayment(
       await prisma.payment.update({
-        where: { id },
+        where: { id: paymentId },
         data: {
           amount: amount !== undefined ? Number(amount) : oldPayment.amount,
           method: method || oldPayment.method,
@@ -425,34 +704,27 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
           (req as any).user?.name ||
           (req as any).user?.username ||
           (changedBy === "admin" ? "Admin" : changedBy);
+        const paymentAdjustment = buildPaymentAdjustmentDetails(oldPayment, updatedPayment, amountDiff);
+        const savedAppointmentWithPaymentDate = {
+          ...savedAppointment,
+          paymentDate: updatedPayment.date || oldPayment.date,
+          paymentMethod: updatedPayment.method || oldPayment.method,
+          paymentAdjustment,
+        };
         await createAppointmentLog(
           oldPayment.appointmentId,
           oldAppointment,
-          savedAppointment,
+          savedAppointmentWithPaymentDate,
           changedBy,
           changedByName,
-          "payment",
+          "payment_adjustment",
           amountDiff,
           notes
         );
 
-        await createPaymentLog(
-          oldPayment.appointmentId,
-          amountDiff,
-          updatedPayment.method || oldPayment.method || "unknown",
-          savedAppointment.paymentStatus || "unpaid",
-          changedBy,
-          oldAppointment.balance || 0,
-          savedAppointment.balance || 0,
-          changedByName
-        );
-
         const recipients = await resolveRecipients(savedAppointment);
         const oldAppointmentForNotifications = withResolvedAppointmentReferences(oldAppointment, doctorStaff, patients);
-        const savedAppointmentForNotifications = withResolvedAppointmentReferences(savedAppointment, doctorStaff, patients);
-        if (amountDiff > 0) {
-          await notifyPaymentReceived(oldPayment.appointmentId, amountDiff, recipients, appointmentData(savedAppointmentForNotifications, oldAppointmentForNotifications), id);
-        }
+        const savedAppointmentForNotifications = withResolvedAppointmentReferences(savedAppointmentWithPaymentDate, doctorStaff, patients);
         if (savedAppointment.paymentStatus !== oldPaymentStatus) {
           await notifyStatusChange(
             oldPayment.appointmentId,
@@ -463,6 +735,11 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
             appointmentData(savedAppointmentForNotifications, oldAppointmentForNotifications)
           );
         }
+
+        await prisma.payment.update({
+          where: { id: paymentId },
+          data: { appointmentSnapshot: savedAppointmentForNotifications as any, updatedAt: new Date() },
+        });
       }
 
       await prisma.patient.updateMany({
@@ -470,11 +747,12 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
         data: { balance: { decrement: amountDiff }, updatedAt: new Date() },
       });
 
-      await prisma.financeRecord.updateMany({
-        where: { description: { contains: `Payment ${id}` } },
-        data: { amount: updatedPayment.amount, updatedAt: new Date() },
-      });
     }
+
+    await prisma.financeRecord.updateMany({
+      where: { description: { contains: `Payment ${paymentId}` } },
+      data: { amount: updatedPayment.amount, date: updatedPayment.date, updatedAt: new Date() },
+    });
 
     res.json({ success: true, message: "Payment updated", data: { payment: updatedPayment } });
   } catch (error) {
@@ -490,13 +768,13 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
 export const deletePayment = async (req: Request<IdParams>, res: Response<ApiResponse<any>>) => {
   try {
     const { id } = req.params;
-    const payment = toPayment(await prisma.payment.findUnique({ where: { id } }));
+    const payment = await findPaymentOrMaterialize(id);
     if (!payment || payment.deleted) {
       return res.status(404).json({ success: false, message: "Payment not found" });
     }
 
     await prisma.payment.update({
-      where: { id },
+      where: { id: payment.id },
       data: { deleted: true, updatedAt: new Date() },
     });
 
@@ -565,7 +843,7 @@ export const deletePayment = async (req: Request<IdParams>, res: Response<ApiRes
     });
 
     await prisma.financeRecord.updateMany({
-      where: { description: { contains: `Payment ${id}` } },
+      where: { description: { contains: `Payment ${payment.id}` } },
       data: { deleted: true, updatedAt: new Date() },
     });
 

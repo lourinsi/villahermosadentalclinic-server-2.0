@@ -83,7 +83,7 @@ const isBillableAppointment = (appointment: { status?: string | null; deleted?: 
   if (appointment.deleted) return false;
 
   const status = normalizeStatus(appointment.status);
-  return status !== "cancelled" && !isPatientCartStatus(status);
+  return status !== "cancelled" && status !== "deleted" && !isPatientCartStatus(status);
 };
 
 const getAppointmentOutstandingBalance = (
@@ -221,6 +221,7 @@ const withPatientAppointmentSummaries = async (patients: any[], doctor?: string)
       appointmentDate >= todayStr &&
       aptStatus !== "completed" &&
       aptStatus !== "cancelled" &&
+      aptStatus !== "deleted" &&
       !isPatientCartStatus(aptStatus)
     ) {
       if (!entry.nextAppointment || compareAppointmentSchedule(appointment, entry.nextAppointment) < 0) {

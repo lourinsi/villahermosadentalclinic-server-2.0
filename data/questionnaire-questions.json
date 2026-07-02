@@ -1,0 +1,401 @@
+[
+  {
+    "id": "baseline_physician_information",
+    "text": "Physician information: Name of Physician, specialty if applicable, office address, and office number.",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_good_health",
+    "text": "Are you in good health?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_under_medical_treatment",
+    "text": "Are you under medical treatment now? If so, what is the condition being treated?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_serious_illness_or_operation",
+    "text": "Have you ever had serious illness or surgical operation? If so, what illness or operation?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_hospitalized",
+    "text": "Have you ever been hospitalized? If so, when and why?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_medication",
+    "text": "Are you taking any prescription/non-prescription medication? If so, please specify.",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_tobacco",
+    "text": "Do you use tobacco products?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_alcohol_or_drugs",
+    "text": "Do you use alcohol, cocaine or other dangerous drugs?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_allergy_local_anesthetic",
+    "text": "Are you allergic to Local Anesthetic (ex. Lidocaine)?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_allergy_penicillin_antibiotics",
+    "text": "Are you allergic to Penicillin / Antibiotics?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_allergy_sulfa",
+    "text": "Are you allergic to Sulfa drugs?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_allergy_aspirin",
+    "text": "Are you allergic to Aspirin?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_allergy_latex",
+    "text": "Are you allergic to Latex?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_allergy_others",
+    "text": "Do you have any other allergies?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_bleeding_time",
+    "text": "Bleeding Time",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_pregnant",
+    "text": "For women only: Are you pregnant?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_nursing",
+    "text": "For women only: Are you nursing?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_birth_control",
+    "text": "For women only: Are you taking birth control pills?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_blood_type",
+    "text": "Blood Type",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_blood_pressure",
+    "text": "Blood Pressure",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_high_blood_pressure",
+    "text": "Have you had High Blood Pressure?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_low_blood_pressure",
+    "text": "Have you had Low Blood Pressure?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_epilepsy_convulsions",
+    "text": "Have you had Epilepsy / Convulsions?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_aids_hiv",
+    "text": "Have you had AIDS or HIV Infection?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_sexually_transmitted_disease",
+    "text": "Have you had a Sexually Transmitted disease?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_stomach_troubles_ulcers",
+    "text": "Have you had Stomach Troubles / Ulcers?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_fainting_seizure",
+    "text": "Have you had Fainting Seizure?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_rapid_weight_loss",
+    "text": "Have you had Rapid Weight Loss?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_radiation_therapy",
+    "text": "Have you had Radiation Therapy?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_joint_replacement_implant",
+    "text": "Have you had Joint Replacement / Implant?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_heart_surgery",
+    "text": "Have you had Heart Surgery?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_heart_attack",
+    "text": "Have you had a Heart Attack?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_thyroid_problem",
+    "text": "Have you had a Thyroid Problem?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_heart_disease",
+    "text": "Have you had Heart Disease?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_heart_murmur",
+    "text": "Have you had a Heart Murmur?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_hepatitis_liver_disease",
+    "text": "Have you had Hepatitis / Liver Disease?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_rheumatic_fever",
+    "text": "Have you had Rheumatic Fever?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_hay_fever_allergies",
+    "text": "Have you had Hay Fever / Allergies?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_respiratory_problems",
+    "text": "Have you had Respiratory Problems?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_hepatitis_jaundice",
+    "text": "Have you had Hepatitis / Jaundice?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_tuberculosis",
+    "text": "Have you had Tuberculosis?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_swollen_ankles",
+    "text": "Have you had Swollen ankles?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_kidney_disease",
+    "text": "Have you had Kidney disease?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_diabetes",
+    "text": "Have you had Diabetes?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_chest_pain",
+    "text": "Have you had Chest pain?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_stroke",
+    "text": "Have you had a Stroke?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_cancer_tumors",
+    "text": "Have you had Cancer / Tumors?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_anemia",
+    "text": "Have you had Anemia?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_angina",
+    "text": "Have you had Angina?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_asthma",
+    "text": "Have you had Asthma?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_emphysema",
+    "text": "Have you had Emphysema?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_bleeding_problems",
+    "text": "Have you had Bleeding Problems?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_blood_diseases",
+    "text": "Have you had Blood Diseases?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_head_injuries",
+    "text": "Have you had Head Injuries?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_arthritis_rheumatism",
+    "text": "Have you had Arthritis / Rheumatism?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "baseline_condition_other",
+    "text": "Have you had any other medical condition?",
+    "isActive": true,
+    "createdAt": "2026-07-02T00:00:00.000Z",
+    "updatedAt": "2026-07-02T00:00:00.000Z"
+  },
+  {
+    "id": "question_1782948248969_299",
+    "text": "Peanut Allergy",
+    "isActive": true,
+    "createdAt": "2026-07-01T23:24:08.969Z",
+    "updatedAt": "2026-07-01T23:24:18.960Z"
+  }
+]
