@@ -40,6 +40,7 @@ const normalizeItem = (item: Partial<ServiceCatalogItem>, fallbackId: number): S
     id,
     value: name || `Service ${id}`,
     label: name || `Service ${id}`,
+    icon: String(item.icon || "").trim() || "🦷",
     price,
     duration: normalizeDuration(item.duration, 30),
     isActive: item.isActive !== false,

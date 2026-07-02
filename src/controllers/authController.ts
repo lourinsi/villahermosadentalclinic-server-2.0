@@ -1,6 +1,8 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import fs from "fs";
+import path from "path";
 import { prisma } from "../lib/prisma";
 
 const ADMIN_USERNAME = "admin";
@@ -25,10 +27,29 @@ const JWT_SECRET = process.env.JWT_SECRET || "your-super-secret-jwt-key-change-t
 const JWT_EXPIRY = "24h";
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const AUTH_COOKIE_SAME_SITE = IS_PRODUCTION ? "none" : "strict";
+const DATA_DIR = path.resolve(process.cwd(), "data");
+const AUTH_SETTINGS_FILE = path.join(DATA_DIR, "auth-settings.json");
+
+const readAuthSettings = (): Record<string, string> => {
+  try {
+    if (!fs.existsSync(AUTH_SETTINGS_FILE)) return {};
+    const parsed = JSON.parse(fs.readFileSync(AUTH_SETTINGS_FILE, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed as Record<string, string> : {};
+  } catch (error) {
+    console.warn("[AUTH] Failed to read auth settings:", error);
+    return {};
+  }
+};
+
+const writeAuthSettings = async (settings: Record<string, string>) => {
+  await fs.promises.mkdir(DATA_DIR, { recursive: true });
+  await fs.promises.writeFile(AUTH_SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf8");
+};
 
 export const initializeAuth = async () => {
   try {
-    ADMIN_PASSWORD_HASH = await bcrypt.hash(ADMIN_PASSWORD, 10);
+    const authSettings = readAuthSettings();
+    ADMIN_PASSWORD_HASH = authSettings.adminPasswordHash || (await bcrypt.hash(ADMIN_PASSWORD, 10));
     TEST_DOCTOR_PASSWORD_HASH = await bcrypt.hash(TEST_DOCTOR_PASSWORD, 10);
     DOCTOR_PASSWORD_HASH = await bcrypt.hash(DEFAULT_DOCTOR_PASSWORD, 10);
     RECEPTIONIST_PASSWORD_HASH = await bcrypt.hash(DEFAULT_RECEPTIONIST_PASSWORD, 10);
@@ -360,6 +381,91 @@ export const verifyToken = (
     res.status(401).json({
       success: false,
       message: "Invalid or expired token",
+    });
+  }
+};
+
+export const changePassword = async (
+  req: express.Request,
+  res: express.Response
+): Promise<void> => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    const user = (req as any).user || {};
+    const role = String(user.role || "").toLowerCase();
+
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({
+        success: false,
+        message: "Current password and new password are required",
+      });
+      return;
+    }
+
+    if (String(newPassword).length < 6) {
+      res.status(400).json({
+        success: false,
+        message: "New password must be at least 6 characters",
+      });
+      return;
+    }
+
+    if (role === "admin") {
+      const isCurrentPasswordValid = await bcrypt.compare(currentPassword, ADMIN_PASSWORD_HASH);
+      if (!isCurrentPasswordValid) {
+        res.status(401).json({ success: false, message: "Current password is incorrect" });
+        return;
+      }
+
+      const nextHash = await bcrypt.hash(newPassword, 10);
+      ADMIN_PASSWORD_HASH = nextHash;
+      await writeAuthSettings({
+        ...readAuthSettings(),
+        adminPasswordHash: nextHash,
+      });
+
+      res.status(200).json({ success: true, message: "Password changed successfully" });
+      return;
+    }
+
+    if (role === "receptionist") {
+      const staffId = String(user.staffId || "");
+      if (!staffId) {
+        res.status(400).json({ success: false, message: "Staff account is missing" });
+        return;
+      }
+
+      const staff = await prisma.staff.findFirst({ where: { id: staffId, deleted: false } });
+      if (!staff) {
+        res.status(404).json({ success: false, message: "Staff account not found" });
+        return;
+      }
+
+      const passwordHash = staff.password || RECEPTIONIST_PASSWORD_HASH;
+      const isCurrentPasswordValid = await bcrypt.compare(currentPassword, passwordHash);
+      if (!isCurrentPasswordValid) {
+        res.status(401).json({ success: false, message: "Current password is incorrect" });
+        return;
+      }
+
+      await prisma.staff.update({
+        where: { id: staffId },
+        data: {
+          password: await bcrypt.hash(newPassword, 10),
+          updatedAt: new Date(),
+        },
+      });
+
+      res.status(200).json({ success: true, message: "Password changed successfully" });
+      return;
+    }
+
+    res.status(403).json({ success: false, message: "Password changes are only available for admins and receptionists" });
+  } catch (error) {
+    console.error("[AUTH] Change password error:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while changing password",
     });
   }
 };

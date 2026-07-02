@@ -315,6 +315,67 @@ const appointmentData = (appointment: Appointment, previousState?: Appointment) 
   newState: appointment,
 });
 
+const todayDateKey = () => new Date().toISOString().split("T")[0];
+
+const createEditablePaymentRecordForAppointment = async ({
+  appointment,
+  amount,
+  method,
+  paymentDate,
+  appointmentSnapshot,
+  notes,
+}: {
+  appointment: Appointment;
+  amount: number;
+  method?: string | null;
+  paymentDate?: string;
+  appointmentSnapshot?: any;
+  notes?: string | null;
+}) => {
+  const paymentAmount = Math.max(0, toPaymentNumber(amount));
+  if (!appointment.id || paymentAmount <= 0) return null;
+
+  const recordDate = normalizePaymentDateInput(paymentDate) || todayDateKey();
+  const paymentId = `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const paymentMethod = method || appointment.paymentMethod || "cash";
+  const snapshot = appointmentSnapshot || appointment;
+
+  const payment = await prisma.payment.create({
+    data: {
+      id: paymentId,
+      appointmentId: appointment.id,
+      patientId: appointment.patientId || null,
+      amount: paymentAmount,
+      method: paymentMethod,
+      date: recordDate,
+      appointmentSnapshot: snapshot as any,
+      transactionId: `T-${Math.random().toString(36).slice(2, 9).toUpperCase()}`,
+      notes: notes || "",
+      status: "completed",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deleted: false,
+    },
+  });
+
+  await prisma.financeRecord.create({
+    data: {
+      id: `fin_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      patientId: appointment.patientId || null,
+      type: "payment",
+      amount: paymentAmount,
+      date: recordDate,
+      description: `Payment ${payment.id} for appointment ${appointment.id}`,
+      appointmentSnapshot: snapshot as any,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deleted: false,
+    },
+  });
+
+  return payment;
+};
+
 const buildAppointmentCreateData = (appointment: Appointment) => {
   const basePrice = getAppointmentPrice(appointment.type);
   const discount = Number(appointment.discount) || 0;
@@ -666,6 +727,15 @@ export const addAppointment = async (
     );
 
     if (created.totalPaid && created.totalPaid > 0) {
+      const createdPaymentRecord = await createEditablePaymentRecordForAppointment({
+        appointment: created,
+        amount: created.totalPaid,
+        method: created.paymentMethod || "cash",
+        paymentDate: requestedPaymentDate,
+        appointmentSnapshot: createdLogSnapshot,
+        notes: appointmentLogNotes,
+      });
+
       await createPaymentLog(
         created.id!,
         created.totalPaid,
@@ -681,7 +751,7 @@ export const addAppointment = async (
         created.totalPaid,
         recipients,
         appointmentData(createdForResponse),
-        `initial_${created.id}`
+        createdPaymentRecord?.id || `initial_${created.id}`
       );
     }
 
@@ -1177,10 +1247,21 @@ export const updateAppointment = async (
       doctorStaff
     ) as Appointment;
 
+    const updatedPaymentRecord = paymentAmount > 0
+      ? await createEditablePaymentRecordForAppointment({
+          appointment: saved,
+          amount: paymentAmount,
+          method: updatedAppointment.paymentMethod || "cash",
+          paymentDate: requestedPaymentDate,
+          appointmentSnapshot: buildPaymentDatedAppointmentSnapshot(savedForNotifications as any, requestedPaymentDate, paymentAmount),
+          notes: updates.notes || "",
+        })
+      : null;
+
     const recipients = await resolveRecipients(savedForNotifications);
 
     if (paymentAmount > 0) {
-      await notifyPaymentReceived(saved.id || "", paymentAmount, recipients, appointmentData(savedForNotifications, oldForNotifications), `update_${saved.id}_${Date.now()}`);
+      await notifyPaymentReceived(saved.id || "", paymentAmount, recipients, appointmentData(savedForNotifications, oldForNotifications), updatedPaymentRecord?.id || `update_${saved.id}_${Date.now()}`);
     }
 
     if (updates.status && updates.status !== oldStatus) {
@@ -1472,6 +1553,15 @@ export const bookPublicAppointment = async (
     );
 
     if (created.totalPaid && created.totalPaid > 0) {
+      const createdPaymentRecord = await createEditablePaymentRecordForAppointment({
+        appointment: created,
+        amount: created.totalPaid,
+        method: created.paymentMethod || "cash",
+        paymentDate: requestedPaymentDate,
+        appointmentSnapshot: createdLogSnapshot,
+        notes: appointmentLogNotes,
+      });
+
       await createPaymentLog(
         created.id!,
         created.totalPaid,
@@ -1487,7 +1577,7 @@ export const bookPublicAppointment = async (
         created.totalPaid,
         await resolveRecipients(createdForResponse),
         appointmentData(createdForResponse),
-        `initial_${created.id}`
+        createdPaymentRecord?.id || `initial_${created.id}`
       );
     }
 

@@ -1579,9 +1579,14 @@ export const getRecentTransactions = async (
       prisma.payment.findMany({ where: { deleted: false }, orderBy: { date: "desc" } }),
       prisma.appointmentLog.findMany({
         where: {
-          OR: [
-            { changeType: "payment" },
-            { amount: { gt: 0 } },
+          AND: [
+            {
+              OR: [
+                { changeType: "payment" },
+                { amount: { gt: 0 } },
+              ],
+            },
+            { NOT: { changeType: "payment_adjustment" } },
           ],
         },
         orderBy: { changedAt: "desc" },
@@ -1635,7 +1640,10 @@ export const getRecentTransactions = async (
         amount: Math.abs(toFiniteNumber(payment.amount)),
         type: "income",
         method: normalizeMethod(payment.method),
+        patientId: payment.patientId,
         appointmentId: payment.appointmentId,
+        transactionId: payment.transactionId,
+        notes: payment.notes,
         appointmentSnapshot,
         logDate: payment.createdAt ? toIsoDate(payment.createdAt) : paymentDate,
         source: "payment",
